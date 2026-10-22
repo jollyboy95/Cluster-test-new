@@ -67,7 +67,11 @@ public class GwmLogcatUserService extends IGwmLogcatService.Stub {
             }
             safeStopReason(callback, stopping ? "stopped" : "logcat stream ended");
         } catch (IOException e) {
-            safeStopReason(callback, "logcat exec failed: " + e);
+            // A blocking read() throws InterruptedIOException when stop() kills the logcat
+            // process out from under it - that's the normal shutdown path, not a real failure,
+            // so only report it as an error when we didn't ask for the stop ourselves (seen
+            // on-car: a routine Start/Stop cycle was logging "logcat exec failed" every time).
+            safeStopReason(callback, stopping ? "stopped" : "logcat exec failed: " + e);
         } finally {
             killProcess();
         }

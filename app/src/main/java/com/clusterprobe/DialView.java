@@ -199,10 +199,16 @@ public class DialView extends View {
         } else {
             drawMapWindow(canvas, w, h);
         }
-        textPaint.setTextSize(Math.max(14, h * 0.035f));
-        textPaint.setAlpha(140);
-        canvas.drawText(loadedTheme.label + "  " + w + "x" + h, w / 2f, h * 0.085f, textPaint);
-        textPaint.setAlpha(255);
+        // Dev-only theme/resolution label - skipped on DASH-kind themes (Newcastle dash etc).
+        // Those are meant to look like a finished dash, and on real hardware this text was
+        // landing right on top of the stock time/gear readout and warning icons (seen on-car:
+        // "...wcastle dash 1920x7..." overlapping the seatbelt/park-brake icons).
+        if (loadedTheme.kind != Theme.Kind.DASH) {
+            textPaint.setTextSize(Math.max(14, h * 0.035f));
+            textPaint.setAlpha(140);
+            canvas.drawText(loadedTheme.label + "  " + w + "x" + h, w / 2f, h * 0.085f, textPaint);
+            textPaint.setAlpha(255);
+        }
     }
 
     // ---- Crema: two round dial bitmaps with sweeping needles ----
