@@ -149,7 +149,12 @@ public class GwmLogcatVehicleDataSource {
 
     private void doStop() {
         try {
-            if (service != null) service.stop();
+            // destroy() (not just stop()) so the shell-UID process actually exits instead of
+            // sitting idle - a quick stop/start cycle otherwise risks rebinding to a process
+            // that's still mid-teardown. The remote side calls System.exit(0) right after
+            // replying, so a RemoteException here from the dying process is expected, not an
+            // error worth logging.
+            if (service != null) service.destroy();
         } catch (RemoteException ignored) {
         }
         try {
@@ -163,8 +168,11 @@ public class GwmLogcatVehicleDataSource {
         Matcher m;
 
         if ((m = SPEED_NAMED.matcher(line)).find() || (m = SPEED_KV.matcher(line)).find()) {
-            DialView.pushLiveSpeed(parseFloat(m.group(1)));
-            noteFirstSeen(Prop.SPEED, "speed");
+            float raw = parseFloat(m.group(1));
+            DialView.pushLiveSpeed(raw);
+            noteFirstSeen(Prop.SPEED, "speed (raw value " + raw + " - UNIT NOT CONFIRMED YET: "
+                    + "check this against the stock speedo before trusting it; SmartSplit treats "
+                    + "it as km/h but that hasn't been independently verified on this car)");
         }
         if ((m = RPM_NAMED.matcher(line)).find() || (m = RPM_KV.matcher(line)).find()) {
             DialView.pushLiveRpm(parseFloat(m.group(1)));
@@ -178,7 +186,10 @@ public class GwmLogcatVehicleDataSource {
         }
         if ((m = RANGE_KV.matcher(line)).find()) {
             DialView.pushLiveRangeKm(parseFloat(m.group(1)));
-            noteFirstSeen(Prop.RANGE, "range");
+            noteFirstSeen(Prop.RANGE, "\"remain_odometer\" (showing in the range panel as a guess - "
+                    + "the key name is NOT confirmed to mean remaining driving range rather than "
+                    + "something else like a service/maintenance distance; compare against the "
+                    + "stock range display before trusting it)");
         }
         if ((m = TEMP_KV.matcher(line)).find()) {
             DialView.pushLiveTempC(parseFloat(m.group(1)));
