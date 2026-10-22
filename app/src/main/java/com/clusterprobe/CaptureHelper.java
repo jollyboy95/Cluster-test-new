@@ -38,9 +38,34 @@ public class CaptureHelper {
     private int w, h;
     public volatile Bitmap latestBitmap;
 
-    public static void requestCapture(Activity act, int requestCode) {
-        MediaProjectionManager mpm = (MediaProjectionManager) act.getSystemService(Activity.MEDIA_PROJECTION_SERVICE);
-        act.startActivityForResult(mpm.createScreenCaptureIntent(), requestCode);
+    /** @return null if the request couldn't even be made (e.g. no MediaProjection service on
+     *  this build) - the caller should check and log rather than assume it always starts. */
+    public static String requestCapture(Activity act, int requestCode) {
+        MediaProjectionManager mpm;
+        try {
+            mpm = (MediaProjectionManager) act.getSystemService(Activity.MEDIA_PROJECTION_SERVICE);
+        } catch (Throwable t) {
+            return "getSystemService(MEDIA_PROJECTION_SERVICE) threw: " + t;
+        }
+        if (mpm == null) {
+            return "MEDIA_PROJECTION_SERVICE is not available on this build (getSystemService returned null).";
+        }
+        android.content.Intent intent;
+        try {
+            intent = mpm.createScreenCaptureIntent();
+        } catch (Throwable t) {
+            return "createScreenCaptureIntent() threw: " + t;
+        }
+        if (intent == null) {
+            return "createScreenCaptureIntent() returned null.";
+        }
+        try {
+            act.startActivityForResult(intent, requestCode);
+        } catch (Throwable t) {
+            return "startActivityForResult() threw: " + t
+                    + "  (no activity on this build may handle the capture-consent screen).";
+        }
+        return null; // success
     }
 
     /** Call from onActivityResult once the user grants the capture prompt (resultCode == RESULT_OK). */

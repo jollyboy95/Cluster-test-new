@@ -37,6 +37,7 @@ public class MainActivity extends android.app.Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        CrashLogger.install(this);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -147,7 +148,15 @@ public class MainActivity extends android.app.Activity {
 
     private void testCapture() {
         appendLog("Requesting MediaProjection capture - accept the system prompt if one appears.");
-        CaptureHelper.requestCapture(this, REQ_CAPTURE);
+        String err;
+        try {
+            err = CaptureHelper.requestCapture(this, REQ_CAPTURE);
+        } catch (Throwable t) {
+            err = "Unexpected: " + t;
+        }
+        if (err != null) {
+            appendLog("Could not request capture: " + err);
+        }
     }
 
     @Override
@@ -158,21 +167,29 @@ public class MainActivity extends android.app.Activity {
             appendLog("Capture not granted (resultCode=" + resultCode + "). Nothing started.");
             return;
         }
-        CaptureHelper.start(this, resultCode, data, new CaptureHelper.FrameListener() {
-            @Override public void onFrame(Bitmap bmp) {
-                main.post(() -> {
-                    preview.setImageBitmap(bmp);
-                    float luma = CaptureHelper.averageLuma(bmp);
-                    if (luma >= 0 && luma < 4f) {
-                        appendLogOnce("Captured frame is nearly all black (avg luma " + luma
-                                + ") - this usually means the content is protected/blanked for capture, "
-                                + "or we're only mirroring an idle screen. Worth checking the preview above.");
-                    }
-                });
-            }
-            @Override public void onLog(String msg) { main.post(() -> appendLog(msg)); }
-        });
-        startPreviewLoopLog();
+        try {
+            CaptureHelper.start(this, resultCode, data, new CaptureHelper.FrameListener() {
+                @Override public void onFrame(Bitmap bmp) {
+                    main.post(() -> {
+                        try {
+                            preview.setImageBitmap(bmp);
+                            float luma = CaptureHelper.averageLuma(bmp);
+                            if (luma >= 0 && luma < 4f) {
+                                appendLogOnce("Captured frame is nearly all black (avg luma " + luma
+                                        + ") - this usually means the content is protected/blanked for capture, "
+                                        + "or we're only mirroring an idle screen. Worth checking the preview above.");
+                            }
+                        } catch (Throwable t) {
+                            appendLog("Frame display error: " + t);
+                        }
+                    });
+                }
+                @Override public void onLog(String msg) { main.post(() -> appendLog(msg)); }
+            });
+            startPreviewLoopLog();
+        } catch (Throwable t) {
+            appendLog("Capture failed to start: " + t + "  (see crash.log for the full trace).");
+        }
     }
 
     private String lastOnceMsg = "";
