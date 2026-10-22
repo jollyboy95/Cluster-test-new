@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Standard Android Automotive permissions for reading live speed/RPM via android.car -
+         public AAOS API, not GWM's private adapter. See VehicleDataSource.java. -->
+    <uses-permission android:name="android.car.permission.CAR_SPEED" />
+    <uses-permission android:name="android.car.permission.CAR_ENGINE_DETAILED" />
+    <uses-library android:name="android.car" android:required="false" />
     <application
         android:label="ClusterProbe"
         android:allowBackup="false"

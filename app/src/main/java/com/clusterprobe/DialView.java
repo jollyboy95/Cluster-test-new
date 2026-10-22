@@ -10,6 +10,9 @@ import android.graphics.RectF;
 import android.view.View;
 
 import java.io.InputStream;
+import java.util.Collections;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Draws one of several selectable cluster themes.
@@ -30,9 +33,10 @@ public class DialView extends View {
         CREMA_SOLID("Crema (solid)", Kind.ROUND_PAIR, "crema_speed_dial_solid_600.png", "crema_rpm_dial_solid_600.png", null),
         APEX_WIDE("Apex (wide map)", Kind.MAP_WINDOW, null, null, "apex_mask_wide_1920x720.png"),
         APEX_TIGHT("Apex (tight map)", Kind.MAP_WINDOW, null, null, "apex_mask_tight_1920x720.png"),
-        APEX_MAX("Apex (max map)", Kind.MAP_WINDOW, null, null, "apex_mask_max_1920x720.png");
+        APEX_MAX("Apex (max map)", Kind.MAP_WINDOW, null, null, "apex_mask_max_1920x720.png"),
+        HUD_CLEAN("HUD (clean)", Kind.HUD, null, null, null);
 
-        enum Kind { ROUND_PAIR, MAP_WINDOW }
+        enum Kind { ROUND_PAIR, MAP_WINDOW, HUD }
         final String label; final Kind kind; final String speedAsset, rpmAsset, maskAsset;
         Theme(String label, Kind kind, String speedAsset, String rpmAsset, String maskAsset) {
             this.label = label; this.kind = kind; this.speedAsset = speedAsset; this.rpmAsset = rpmAsset; this.maskAsset = maskAsset;
@@ -47,6 +51,33 @@ public class DialView extends View {
      *  frame - see MainActivity's "Test map capture" button. Read on the UI thread only. */
     public static volatile Bitmap captureOverlay;
     public static volatile boolean useCaptureOverlay = false;
+
+    /** When off (the default), the Apex themes skip their big centre speed readout, since the
+     *  real stock digital readout is now confirmed visible through the cut-out anyway and a
+     *  second, fake/demo number just duplicates (and contradicts) it. Flip on if you want it
+     *  back - e.g. for the round-pair Crema themes it's not drawn here at all regardless. */
+    public static volatile boolean showCenterReadout = false;
+
+    /** Set true once real vehicle data starts arriving (VehicleDataSource) - stops every
+     *  DialView's own fake demo animation so drawn values don't fight with real ones. */
+    static volatile boolean liveMode = false;
+    private static volatile float liveSpeedKmh = 0f;
+    private static volatile float liveRpm = 0f;
+    private static final Set<DialView> activeViews = Collections.newSetFromMap(new ConcurrentHashMap<>());
+
+    public static void pushLiveSpeed(float kmh) { liveMode = true; liveSpeedKmh = kmh; broadcastLive(); }
+    public static void pushLiveRpm(float rpm) { liveMode = true; liveRpm = rpm; broadcastLive(); }
+
+    private static void broadcastLive() {
+        for (DialView v : activeViews) v.post(() -> v.setValues(liveSpeedKmh, liveRpm));
+    }
+
+    /** Force every currently-open DialView (cluster + HUD, Activity + overlay windows) to redraw
+     *  right away - for toggles like showCenterReadout/useCaptureOverlay that don't change
+     *  speed/rpm/theme, so they wouldn't otherwise be picked up until the next frame. */
+    public static void invalidateAll() {
+        for (DialView v : activeViews) v.post(v::invalidate);
+    }
 
     private static final float MAX_SPEED = 220f;
     private static final float MAX_RPM = 7000f;
@@ -112,29 +143,38 @@ public class DialView extends View {
 
     @Override protected void onAttachedToWindow() {
         super.onAttachedToWindow();
+        activeViews.add(this);
+        if (liveMode) {
+            setValues(liveSpeedKmh, liveRpm); // show whatever we already have straight away
+            return;
+        }
         anim = ValueAnimator.ofFloat(0f, 1f);
         anim.setDuration(7000);
         anim.setRepeatCount(ValueAnimator.INFINITE);
         anim.setRepeatMode(ValueAnimator.REVERSE);
         anim.addUpdateListener(a -> {
+            if (liveMode) { anim.cancel(); return; } // real data started after we began faking it
             float t = (float) a.getAnimatedValue();
             speed = t * 200f; rpm = t * 6500f;
-            refreshTheme();
             invalidate();
         });
         anim.start();
     }
 
     @Override protected void onDetachedFromWindow() {
+        activeViews.remove(this);
         if (anim != null) anim.cancel();
         recycleAll();
         super.onDetachedFromWindow();
     }
 
     @Override protected void onDraw(Canvas canvas) {
+        refreshTheme(); // cheap no-op unless the theme actually changed since the last frame
         int w = getWidth(), h = getHeight();
         if (loadedTheme.kind == Theme.Kind.ROUND_PAIR) {
             drawRoundPair(canvas, w, h);
+        } else if (loadedTheme.kind == Theme.Kind.HUD) {
+            drawHudClean(canvas, w, h);
         } else {
             drawMapWindow(canvas, w, h);
         }
@@ -187,18 +227,44 @@ public class DialView extends View {
         arcPaint.setColor(0xFF5AD1FF);
         drawEdgeArc(canvas, cx, cy, rx, ry, false, speedT, sweepDeg);
 
-        textPaint.setTextSize(h * 0.15f);
-        canvas.drawText(String.valueOf(Math.max(0, Math.round(speed))), cx, h * 0.165f, textPaint);
-        textPaint.setTextSize(h * 0.045f);
-        textPaint.setAlpha(180);
-        canvas.drawText("km/h", cx, h * 0.225f, textPaint);
-        textPaint.setAlpha(255);
+        if (showCenterReadout) {
+            textPaint.setTextSize(h * 0.15f);
+            canvas.drawText(String.valueOf(Math.max(0, Math.round(speed))), cx, h * 0.165f, textPaint);
+            textPaint.setTextSize(h * 0.045f);
+            textPaint.setAlpha(180);
+            canvas.drawText("km/h", cx, h * 0.225f, textPaint);
+            textPaint.setAlpha(255);
+        }
     }
 
     private void drawEdgeArc(Canvas canvas, float cx, float cy, float rx, float ry, boolean left, float t, float sweepDeg) {
         RectF oval = new RectF(cx - rx, cy - ry, cx + rx, cy + ry);
         float start = left ? (180f - sweepDeg / 2f) : (-sweepDeg / 2f);
         canvas.drawArc(oval, start, sweepDeg * clamp(t, 0, 1), false, arcPaint);
+    }
+
+    // ---- HUD: crisp, minimal, antialiased - built to replace the stock blurry HUD arrows with
+    // something sharp. No mask/map business here, this is drawn directly for the tiny HUD canvas. ----
+    private void drawHudClean(Canvas canvas, int w, int h) {
+        float cx = w / 2f, cy = h * 0.52f;
+        textPaint.setColor(0xFFEAF6FF);
+        textPaint.setTextSize(h * 0.52f);
+        canvas.drawText(String.valueOf(Math.max(0, Math.round(speed))), cx, cy, textPaint);
+        textPaint.setTextSize(h * 0.15f);
+        textPaint.setAlpha(210);
+        canvas.drawText("km/h", cx, cy + h * 0.24f, textPaint);
+        textPaint.setAlpha(255);
+        textPaint.setColor(0xFFF4F6F8);
+
+        // thin accent tick under the number, filling with RPM the way the edge arcs do elsewhere
+        float rpmT = clamp(rpm / MAX_RPM, 0, 1);
+        float tickW = w * 0.5f;
+        float ty = h * 0.86f;
+        arcPaint.setStrokeWidth(Math.max(3, h * 0.02f));
+        arcPaint.setColor(0x33FFFFFF);
+        canvas.drawLine(cx - tickW / 2, ty, cx + tickW / 2, ty, arcPaint);
+        arcPaint.setColor(rpm >= REDLINE_RPM ? 0xFFFF5C46 : 0xFF5AD1FF);
+        canvas.drawLine(cx - tickW / 2, ty, cx - tickW / 2 + tickW * rpmT, ty, arcPaint);
     }
 
     private static float clamp(float v, float a, float b) { return Math.max(a, Math.min(b, v)); }

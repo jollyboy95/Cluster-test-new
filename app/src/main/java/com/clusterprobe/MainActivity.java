@@ -56,6 +56,14 @@ public class MainActivity extends android.app.Activity {
         addButtonTo(themeRow, "Next >>", () -> cycleTheme(1));
         root.addView(themeRow);
 
+        Button toggleReadout = addButton(root, "Big centre number: OFF (stock readout already shows real speed)", null);
+        toggleReadout.setOnClickListener(v -> {
+            DialView.showCenterReadout = !DialView.showCenterReadout;
+            toggleReadout.setText("Big centre number: " + (DialView.showCenterReadout ? "ON" : "OFF"));
+            DialView.invalidateAll();
+            appendLog("Big centre readout " + (DialView.showCenterReadout ? "shown" : "hidden") + " on Apex themes.");
+        });
+
         addButton(root, "Launch on cluster (display " + CLUSTER_DISPLAY_ID + ") - Activity", () -> launchOnDisplay(CLUSTER_DISPLAY_ID));
         addButton(root, "Launch on HUD (display " + HUD_DISPLAY_ID + ") - Activity, experimental", () -> launchOnDisplay(HUD_DISPLAY_ID));
         addButton(root, "Stop cluster window", this::stopCluster);
@@ -68,13 +76,23 @@ public class MainActivity extends android.app.Activity {
             appendLog("All overlay windows removed.");
         });
 
+        addSection(root, "Live vehicle data (android.car, standard API)");
+        addButton(root, "Start live speed/RPM", () -> {
+            appendLog("Starting VehicleDataSource (android.car.Car)...");
+            VehicleDataSource.start(getApplicationContext(), msg -> appendLog(msg));
+        });
+        addButton(root, "Stop live data (back to demo animation)", () -> {
+            VehicleDataSource.stop();
+            appendLog("Live data stopped - demo animation resumes on next relaunch of a dial window.");
+        });
+
         addSection(root, "Experimental: capture display content");
         addButton(root, "Test map capture (MediaProjection)", this::testCapture);
         Button toggleCapture = addButton(root, "Use captured frame in cluster: OFF", null);
         toggleCapture.setOnClickListener(v -> {
             DialView.useCaptureOverlay = !DialView.useCaptureOverlay;
             toggleCapture.setText("Use captured frame in cluster: " + (DialView.useCaptureOverlay ? "ON" : "OFF"));
-            ClusterActivity.applyThemeChangeToAll();
+            DialView.invalidateAll();
             appendLog("Capture overlay " + (DialView.useCaptureOverlay ? "enabled" : "disabled") + " for MAP_WINDOW themes.");
         });
 
