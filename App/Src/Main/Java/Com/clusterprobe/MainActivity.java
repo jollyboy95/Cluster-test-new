@@ -48,6 +48,7 @@ public class MainActivity extends Activity {
         root.addView(idField);
 
         root.addView(button("H7 THEME PREVIEW (6 CONCEPTS)", v -> startActivity(new Intent(this, ThemePreviewActivity.class))));
+        root.addView(button("FACTORY ADAPTER READ-ONLY CHECK", v -> checkFactoryAdapter()));
         root.addView(button("1. List displays", v -> listDisplays()));
         root.addView(button("2. Method A: overlay window", v -> showOverlay()));
         root.addView(button("NEW: MAP-FIRST PREVIEW (A) - PARKED ONLY", v -> showMapFirst()));
@@ -77,6 +78,45 @@ public class MainActivity extends Activity {
         log("Package: " + getPackageName());
         log("Overlay permission granted: " + Settings.canDrawOverlays(this));
         log("If not granted run: adb shell appops set " + getPackageName() + " SYSTEM_ALERT_WINDOW allow");
+    }
+
+
+    /** Diagnostic only: no Binder transactions, vehicle commands, or settings writes. */
+    private void checkFactoryAdapter() {
+        StringBuilder result = new StringBuilder();
+        result.append("=== H7 ADAPTER READ-ONLY CHECK ===\n");
+        result.append("App UID: ").append(android.os.Process.myUid()).append('\n');
+        String permission = "com.gwm.android.adapter.permission.GET_DATA";
+        int granted = checkSelfPermission(permission);
+        result.append("GET_DATA permission: ")
+              .append(granted == android.content.pm.PackageManager.PERMISSION_GRANTED ? "GRANTED" : "DENIED")
+              .append('\n');
+        result.append("SET_DATA permission (not requested): ")
+              .append(checkSelfPermission("com.gwm.android.adapter.permission.SET_DATA")
+                      == android.content.pm.PackageManager.PERMISSION_GRANTED ? "GRANTED" : "DENIED")
+              .append('\n');
+        try {
+            result.append("Settings.System ipk_setting_theme_config: ")
+                  .append(Settings.System.getString(getContentResolver(), "ipk_setting_theme_config"))
+                  .append('\n');
+        } catch (Throwable t) { result.append("Settings read failed: ").append(t).append('\n'); }
+        try {
+            Class<?> serviceManager = Class.forName("android.os.ServiceManager");
+            java.lang.reflect.Method getService = serviceManager.getDeclaredMethod("getService", String.class);
+            android.os.IBinder binder = (android.os.IBinder) getService.invoke(null, "gwm_adapter");
+            if (binder == null) result.append("gwm_adapter: null binder\n");
+            else {
+                result.append("gwm_adapter binder alive: ").append(binder.isBinderAlive()).append('\n');
+                result.append("gwm_adapter descriptor: ").append(binder.getInterfaceDescriptor()).append('\n');
+            }
+        } catch (Throwable t) {
+            result.append("gwm_adapter lookup failed (possibly hidden API restrictions): ")
+                  .append(t).append('\n');
+        }
+        result.append("NO binder transactions or cluster writes performed.\n");
+        String output = result.toString();
+        log(output);
+        for (String line : output.split("\n")) Log.i("H7AdapterRead", line);
     }
 
     private Button button(String text, View.OnClickListener l) {
