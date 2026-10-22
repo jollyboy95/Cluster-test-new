@@ -23,7 +23,7 @@ jobs:
           gradle-version: '7.6.4'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Assemble debug APK
         run: gradle assembleDebug --no-daemon
