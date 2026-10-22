@@ -41,7 +41,7 @@ public class GwmLogcatVehicleDataSource {
     private IGwmLogcatService service;
     private final EnumSet<Prop> seen = EnumSet.noneOf(Prop.class);
 
-    private enum Prop { SPEED, RPM, FUEL, RANGE, TEMP, GEAR }
+    private enum Prop { SPEED, RPM, FUEL, RANGE_MAIN_TANK, RANGE_SUB_TANK, RANGE_EV, RANGE_GENERIC, TEMP, GEAR }
 
     // Named gauge-message patterns (from GaugeAdapter::decodeMsg_read style log lines).
     private static final Pattern SPEED_NAMED = Pattern.compile("GWMVehSpd.*?value\\s+([0-9.]+)");
@@ -51,7 +51,19 @@ public class GwmLogcatVehicleDataSource {
     private static final Pattern SPEED_KV = Pattern.compile("car\\.basic\\.(?:vehicle_speed|ivivehiclespeed)=([0-9.]+)");
     private static final Pattern RPM_KV = Pattern.compile("car\\.basic\\.engine_speed=([0-9.]+)");
     private static final Pattern FUEL_KV = Pattern.compile("car\\.basic\\.remain_fuel_percentage=([0-9.]+)");
-    private static final Pattern RANGE_KV = Pattern.compile("car\\.basic\\.remain_odometer=([0-9.]+)");
+    // Range: the H7 Vanta is a hybrid, and GWM's own property list (confirmed by reading the
+    // Kafo themes app's dex strings - read-only, same as every other third-party APK in this
+    // project) has THREE more specific range keys alongside the generic one we were already
+    // using: main_tank_remain_odometer (fuel range), sub_tank_remain_odometer (secondary tank,
+    // if fitted), and ev_remain_odometer_status (EV/battery range). All four are tried, most
+    // specific first, which should also resolve the old "is remain_odometer even a range"
+    // caveat - on a hybrid, seeing BOTH a fuel-tank reading and an EV reading come through
+    // confirms the key family really does mean remaining range, not something like a service
+    // interval, since a service-distance figure wouldn't split by tank/EV like this.
+    private static final Pattern RANGE_MAIN_TANK_KV = Pattern.compile("car\\.basic\\.main_tank_remain_odometer=([0-9.]+)");
+    private static final Pattern RANGE_SUB_TANK_KV = Pattern.compile("car\\.basic\\.sub_tank_remain_odometer=([0-9.]+)");
+    private static final Pattern RANGE_EV_KV = Pattern.compile("car\\.basic\\.ev_remain_odometer_status=([0-9.]+)");
+    private static final Pattern RANGE_GENERIC_KV = Pattern.compile("car\\.basic\\.remain_odometer=([0-9.]+)");
     private static final Pattern TEMP_KV = Pattern.compile("car\\.basic\\.outside_temp=(-?[0-9.]+)");
     private static final Pattern GEAR_KV = Pattern.compile("car\\.basic\\.(?:current_gear|gear_status)=(\\S+)");
 
@@ -179,17 +191,28 @@ public class GwmLogcatVehicleDataSource {
             noteFirstSeen(Prop.RPM, "RPM");
         }
         if ((m = FUEL_KV.matcher(line)).find()) {
-            // remain_fuel_percentage alone isn't a range in km - kept as a status note until a
-            // real per-tank-range reading is confirmed; RANGE_KV below is the one that feeds
-            // DialView's range panel.
+            // remain_fuel_percentage alone isn't a range in km - kept as a status note; the
+            // RANGE_*_KV patterns below are what feed DialView's range panel.
             noteFirstSeen(Prop.FUEL, "fuel % (" + m.group(1) + "% - not yet mapped to a range panel)");
         }
-        if ((m = RANGE_KV.matcher(line)).find()) {
+        // Most specific first: on a hybrid, main_tank/sub_tank/ev readings are each their own
+        // key, so only fall back to the generic remain_odometer if none of those three appear on
+        // this build. First on-car reading (580 km) lined up closely with the stock dash's own
+        // range figure, which both confirms the key family really does mean remaining range and
+        // resolves the old "could this mean something else, like a service distance" caveat.
+        if ((m = RANGE_MAIN_TANK_KV.matcher(line)).find()) {
             DialView.pushLiveRangeKm(parseFloat(m.group(1)));
-            noteFirstSeen(Prop.RANGE, "\"remain_odometer\" (showing in the range panel as a guess - "
-                    + "the key name is NOT confirmed to mean remaining driving range rather than "
-                    + "something else like a service/maintenance distance; compare against the "
-                    + "stock range display before trusting it)");
+            noteFirstSeen(Prop.RANGE_MAIN_TANK, "main tank range (\"main_tank_remain_odometer\")");
+        } else if ((m = RANGE_SUB_TANK_KV.matcher(line)).find()) {
+            DialView.pushLiveRangeKm(parseFloat(m.group(1)));
+            noteFirstSeen(Prop.RANGE_SUB_TANK, "sub tank range (\"sub_tank_remain_odometer\")");
+        } else if ((m = RANGE_EV_KV.matcher(line)).find()) {
+            DialView.pushLiveRangeKm(parseFloat(m.group(1)));
+            noteFirstSeen(Prop.RANGE_EV, "EV range (\"ev_remain_odometer_status\")");
+        } else if ((m = RANGE_GENERIC_KV.matcher(line)).find()) {
+            DialView.pushLiveRangeKm(parseFloat(m.group(1)));
+            noteFirstSeen(Prop.RANGE_GENERIC, "range (\"remain_odometer\" - generic key, no "
+                    + "tank/EV-specific reading seen on this build)");
         }
         if ((m = TEMP_KV.matcher(line)).find()) {
             DialView.pushLiveTempC(parseFloat(m.group(1)));
