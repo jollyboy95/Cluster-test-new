@@ -1,31 +1,78 @@
 #!/usr/bin/env bash
+#
+# ClusterProbe install script - clone/pull, build the debug APK, and (if adb can reach a
+# device from wherever this is running) install + launch it.
+#
+# Usage:
+#   ./install.sh                  # build only, install if a device is already connected
+#   ./install.sh 192.168.1.50:5555   # also adb-connect to the head unit over wifi first
+#
+# NOTE on GitHub Codespaces specifically: a Codespace runs in GitHub's cloud, with no network
+# path to your car's wifi, so the adb-connect step below will simply fail there - that's
+# expected, not a bug. In a Codespace this script is still useful for the clone+build steps;
+# download the resulting app-debug.apk from the build and adb-install it from a machine that
+# actually has line-of-sight to the head unit (your PC/phone on the same wifi, or via USB).
+
 set -euo pipefail
-cd "$(dirname "$0")"
-ROOT="$(pwd)"
-MAIN="App/Src/Main/Java/Com/clusterprobe/MainActivity.java"
-MANIFEST="App/Src/Main/AndroidManifest.xml"
-test -f "$MAIN" || { echo "Run from Cluster-test-new repository root"; exit 1; }
-test -f "$MANIFEST"
-mkdir -p App/Src/Main/Assets
-cp preview/index.html App/Src/Main/Assets/h7_theme_preview.html
-cp preview/ThemePreviewActivity.java App/Src/Main/Java/Com/clusterprobe/ThemePreviewActivity.java
-python3 - <<'PY'
-from pathlib import Path
-p=Path('App/Src/Main/Java/Com/clusterprobe/MainActivity.java')
-s=p.read_text()
-needle='        root.addView(button("1. List displays", v -> listDisplays()));'
-insert='        root.addView(button("H7 THEME PREVIEW (6 CONCEPTS)", v -> startActivity(new Intent(this, ThemePreviewActivity.class))));\n'
-if 'H7 THEME PREVIEW (6 CONCEPTS)' not in s:
-    if needle not in s: raise SystemExit('Could not find insertion point in MainActivity.java')
-    s=s.replace(needle,insert+needle,1)
-    p.write_text(s)
-p=Path('App/Src/Main/AndroidManifest.xml')
-s=p.read_text()
-needle='        <activity\n            android:name="com.clusterprobe.ClusterActivity"'
-insert='        <activity android:name="com.clusterprobe.ThemePreviewActivity" android:exported="false" />\n'
-if 'com.clusterprobe.ThemePreviewActivity' not in s:
-    if needle not in s: raise SystemExit('Could not find insertion point in AndroidManifest.xml')
-    s=s.replace(needle,insert+'\n'+needle,1)
-    p.write_text(s)
-PY
-echo 'Preview installed. Commit and push changes to trigger existing Android CI workflow.'
+
+REPO_URL="${CLUSTERPROBE_REPO:-https://github.com/jollyboy95/Cluster-test-new.git}"
+REPO_DIR="Cluster-test-new"
+PACKAGE="com.clusterprobe"
+DEVICE="${1:-}"   # optional: IP:PORT for adb connect, e.g. 192.168.1.50:5555
+
+log()  { echo -e "\033[1;33m==>\033[0m $*"; }
+fail() { echo -e "\033[1;31mERROR:\033[0m $*" >&2; exit 1; }
+
+# --- 1. Get the code ---
+if [ -d "$REPO_DIR/.git" ]; then
+  log "Repo already cloned, pulling latest"
+  git -C "$REPO_DIR" pull --ff-only
+else
+  log "Cloning $REPO_URL"
+  git clone "$REPO_URL" "$REPO_DIR"
+fi
+cd "$REPO_DIR"
+
+# --- 2. Sanity-check the toolchain ---
+command -v gradle >/dev/null 2>&1 || fail "'gradle' not found on PATH. Install Gradle 7.6+ and a JDK 17 first (or run 'gh workflow run' to build via GitHub Actions instead of locally)."
+command -v java   >/dev/null 2>&1 || fail "'java' not found on PATH. Install a JDK (17 recommended) first."
+
+if [ -z "${ANDROID_SDK_ROOT:-}${ANDROID_HOME:-}" ]; then
+  log "ANDROID_SDK_ROOT/ANDROID_HOME is not set. If the build below fails looking for the SDK,"
+  log "install Android cmdline-tools, export ANDROID_SDK_ROOT=/path/to/sdk, and re-run."
+fi
+
+# --- 3. Build ---
+log "Building debug APK (gradle assembleDebug)"
+gradle assembleDebug --no-daemon
+
+APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
+[ -f "$APK_PATH" ] || fail "Build finished but $APK_PATH wasn't produced - check the gradle output above."
+log "Built: $(pwd)/$APK_PATH"
+
+# --- 4. Install, if adb can see a device from here ---
+if ! command -v adb >/dev/null 2>&1; then
+  log "'adb' not found here. Copy $APK_PATH to a machine with adb and run:"
+  log "  adb install -r $APK_PATH"
+  exit 0
+fi
+
+if [ -n "$DEVICE" ]; then
+  log "Connecting to $DEVICE"
+  adb connect "$DEVICE" || true
+fi
+
+if ! adb get-state >/dev/null 2>&1; then
+  log "No adb device/emulator connected from here."
+  log "Connect the head unit (USB, or 'adb connect <ip>:5555' over wifi) and re-run,"
+  log "or manually: adb install -r $APK_PATH"
+  exit 0
+fi
+
+log "Installing $PACKAGE"
+adb install -r "$APK_PATH"
+
+log "Launching MainActivity"
+adb shell am start -n "$PACKAGE/.MainActivity" || log "(couldn't auto-launch - open it from the launcher instead)"
+
+log "Done."
