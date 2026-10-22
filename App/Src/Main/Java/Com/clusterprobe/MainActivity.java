@@ -49,6 +49,7 @@ public class MainActivity extends Activity {
 
         root.addView(button("1. List displays", v -> listDisplays()));
         root.addView(button("2. Method A: overlay window", v -> showOverlay()));
+        root.addView(button("NEW: MAP-FIRST PREVIEW (A) - PARKED ONLY", v -> showMapFirst()));
         root.addView(button("3. Method B: Presentation", v -> showPresentation()));
         root.addView(button("4. Method C: launch activity on display", v -> launchActivity()));
         final Button maskBtn = button("Black mask with map oval: ON", null);
@@ -135,6 +136,26 @@ public class MainActivity extends Activity {
         } catch (Throwable t) {
             log("Method A FAILED: " + t);
         }
+    }
+
+    private void showMapFirst() {
+        Display d = targetDisplay();
+        if (d == null) return;
+        if (d.getDisplayId() != 2) { log("Map-first preview only enabled for cluster display 2."); return; }
+        if (!Settings.canDrawOverlays(this)) { log("Overlay permission missing."); return; }
+        try {
+            stopAll();
+            Context dc = createDisplayContext(d);
+            overlayWm = (WindowManager) dc.getSystemService(Context.WINDOW_SERVICE);
+            overlayView = new MapFirstView(dc);
+            WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                            | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN, PixelFormat.TRANSLUCENT);
+            overlayWm.addView(overlayView, lp);
+            log("MAP-FIRST preview on display 2. PARKED ONLY. Press Stop everything to restore stock cluster.");
+        } catch (Throwable t) { log("MAP-FIRST FAILED: " + t); removeOverlay(); }
     }
 
     private void showPresentation() {
