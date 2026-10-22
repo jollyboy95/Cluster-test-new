@@ -9,7 +9,7 @@ import com.clusterprobe.IGwmLogcatCallback;
  * process via the callback. Never writes to any device, property or vehicle setting.
  */
 interface IGwmLogcatService {
-    void start(IGwmLogcatCallback callback);
+    void start(in IGwmLogcatCallback callback);
     void stop();
     void destroy();
 }
