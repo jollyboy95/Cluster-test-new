@@ -372,3 +372,23 @@ every display, reads as a deliberate lockdown rather than an oversight. This clo
 "copy the AA video frame directly" as a viable fallback - the two remaining live candidates are
 §9's guidance-data probe (v0.18, not yet run on-car) and an independently-drawn map from GPS +
 map tiles, with no dependency on AA/CarPlay's own video at all.
+
+## 12. v0.18 probe run on-car: one result confirmed, one blocked by a code bug
+
+First on-car run of §9's probe. Two outcomes:
+
+- **Renderer-bind check (confirmed, matches the prediction exactly):** `bindService()` against
+  `com.gwm.android.multidisplay/.InstrumentClusterRenderingServiceImpl` failed with
+  `SecurityException: Not allowed to bind to service Intent { cmp=com.gwm.android.multidisplay/
+  .InstrumentClusterRenderingServiceImpl }` - a normal app is rejected outright, exactly as the
+  manifest's `BIND_INSTRUMENT_CLUSTER_RENDERER_SERVICE` requirement (§2) predicted. This is now
+  a confirmed, on-car fact, not just a manifest inference.
+- **Cluster-info check (did not run - a bug in the probe, not a permission result):**
+  `android.car.Car.createCar(Context)` threw `NoSuchMethodException` - this platform's
+  `android.car.jar` doesn't have that single-argument overload (the same one `VehicleDataSource`
+  already relies on elsewhere in this project, which is why live `android.car` property reads
+  have never been confirmed working here either - the Shizuku logcat path has been the only
+  proven live-data source). Fixed in v0.19: `NavigationRendererProbe` now enumerates whatever
+  `createCar(...)` overloads actually exist on this build, logs their exact signatures, and
+  tries each one rather than assuming a specific signature. Still needs a second on-car run to
+  get a real answer for this check.

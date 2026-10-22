@@ -11,6 +11,8 @@ import android.os.Looper;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Read-only diagnostic for the "safe next step" from docs/H7_DISPLAY_ARCHITECTURE.md: does
@@ -83,10 +85,10 @@ public class NavigationRendererProbe {
         Object localCar = null;
         try {
             Class<?> carClass = Class.forName("android.car.Car");
-            Method createCar = carClass.getMethod("createCar", Context.class);
-            localCar = createCar.invoke(null, context);
+            localCar = tryCreateCar(carClass, context, status);
             if (localCar == null) {
-                log(status, "Cluster-info probe: Car.createCar() returned null - car service not available.");
+                log(status, "Cluster-info probe: couldn't obtain a Car instance via any createCar(...) "
+                        + "overload on this build - can't run the rest of this check.");
                 return;
             }
 
@@ -137,6 +139,71 @@ public class NavigationRendererProbe {
                 }
             }
         }
+    }
+
+    /**
+     * android.car.Car.createCar(...) has shipped with several different overloads across AAOS
+     * versions (Context-only, Context+Handler, Context+ServiceConnection, etc.) and this
+     * platform's android.car.jar doesn't have the single-arg one VehicleDataSource and the first
+     * cut of this probe both assumed - confirmed on-car via a NoSuchMethodException. Rather than
+     * guess a second specific signature and risk the same failure, this enumerates whatever
+     * createCar(...) overloads actually exist here, logs them for the record, and tries each in
+     * turn (Context for any Context-typed parameter, a harmless default for anything else -
+     * null for objects, 0/false for primitives) until one returns a non-null Car.
+     */
+    private Object tryCreateCar(Class<?> carClass, Context context, StatusListener status) {
+        List<Method> overloads = new ArrayList<>();
+        for (Method m : carClass.getMethods()) {
+            if (m.getName().equals("createCar") && Modifier.isStatic(m.getModifiers())) {
+                overloads.add(m);
+            }
+        }
+        if (overloads.isEmpty()) {
+            log(status, "Cluster-info probe: android.car.Car has no createCar(...) overload at all on this build.");
+            return null;
+        }
+        StringBuilder found = new StringBuilder("Cluster-info probe: createCar overloads on this build: ");
+        for (Method m : overloads) found.append(describeParams(m)).append("  ");
+        log(status, found.toString());
+
+        for (Method m : overloads) {
+            try {
+                Class<?>[] paramTypes = m.getParameterTypes();
+                Object[] args = new Object[paramTypes.length];
+                for (int i = 0; i < paramTypes.length; i++) {
+                    args[i] = defaultArgFor(paramTypes[i], context);
+                }
+                Object car = m.invoke(null, args);
+                if (car != null) {
+                    log(status, "Cluster-info probe: createCar" + describeParams(m) + " succeeded.");
+                    return car;
+                }
+                log(status, "Cluster-info probe: createCar" + describeParams(m) + " returned null, trying next overload...");
+            } catch (Throwable t) {
+                Throwable cause = (t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null)
+                        ? t.getCause() : t;
+                log(status, "Cluster-info probe: createCar" + describeParams(m) + " threw " + cause + ", trying next overload...");
+            }
+        }
+        return null;
+    }
+
+    private Object defaultArgFor(Class<?> paramType, Context context) {
+        if (paramType.isAssignableFrom(context.getClass())) return context;
+        if (paramType == int.class) return 0;
+        if (paramType == long.class) return 0L;
+        if (paramType == boolean.class) return false;
+        return null; // Handler, ServiceConnection, Executor, etc. - null is a valid "no callback" value here
+    }
+
+    private String describeParams(Method m) {
+        StringBuilder sb = new StringBuilder("(");
+        Class<?>[] params = m.getParameterTypes();
+        for (int i = 0; i < params.length; i++) {
+            if (i > 0) sb.append(", ");
+            sb.append(params[i].getSimpleName());
+        }
+        return sb.append(")").toString();
     }
 
     private String findNavigationServiceConstant(StatusListener status, Class<?> carClass) {
