@@ -66,7 +66,7 @@ public class GwmLogcatUserService extends IGwmLogcatService.Stub {
                 }
             }
             safeStopReason(callback, stopping ? "stopped" : "logcat stream ended");
-        } catch (IOException | InterruptedException e) {
+        } catch (IOException e) {
             safeStopReason(callback, "logcat exec failed: " + e);
         } finally {
             killProcess();
