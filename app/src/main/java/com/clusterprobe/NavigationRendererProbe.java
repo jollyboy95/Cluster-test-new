@@ -12,6 +12,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -39,7 +40,7 @@ import java.util.List;
  *    called, read, or written through it.
  *
  * Nothing here touches car.ipk_setting.*, vehicle coding, display ordering, or any
- * signature-protected write path. It only asks two standard AAOS questions and reports exactly
+ * signature-protected write path. It only asks standard AAOS questions and reports exactly
  * what came back.
  */
 public class NavigationRendererProbe {
@@ -49,6 +50,16 @@ public class NavigationRendererProbe {
     private static final String GWM_CLUSTER_RENDERER_PKG = "com.gwm.android.multidisplay";
     private static final String GWM_CLUSTER_RENDERER_CLS =
             "com.gwm.android.multidisplay.InstrumentClusterRenderingServiceImpl";
+
+    private static final String[] CANDIDATE_ANDROID_CAR_CLASSES = new String[] {
+            "android.car.Car",
+            "android.car.navigation.CarNavigationStatusManager",
+            "android.car.cluster.CarInstrumentClusterManager",
+            "android.car.cluster.renderer.NavigationRenderer",
+            "android.car.cluster.renderer.NavigationRenderer$RendererInfo",
+            "android.car.cluster.renderer.NavigationRenderer$Callback",
+            "android.car.cluster.renderer.NavigationRenderer$NavigationState"
+    };
 
     private static NavigationRendererProbe instance;
 
@@ -75,11 +86,133 @@ public class NavigationRendererProbe {
     private void doRun(Context context, StatusListener status) {
         appContext = context;
         log(status, "--- NavigationRenderer / cluster-renderer probe (read-only) ---");
+        probeAvailableAndroidCarClasses(status);
         probeInstrumentClusterInfo(context, status);
         probeBindToFactoryRenderer(context, status);
     }
 
-    // ---- Check 1: standard CarNavigationStatusManager.getInstrumentClusterInfo() ----
+    /**
+     * Scans for the real Android Automotive classes and service constants this head unit exposes,
+     * instead of assuming one exact API layout or service name. This matters because the H7 build
+     * appears to differ from the single-arg Car.createCar(...) signature that many examples use.
+     */
+    private void probeAvailableAndroidCarClasses(StatusListener status) {
+        for (String className : CANDIDATE_ANDROID_CAR_CLASSES) {
+            try {
+                Class<?> clazz = Class.forName(className);
+                List<String> publicMethods = new ArrayList<>();
+                for (Method m : clazz.getMethods()) {
+                    if (Modifier.isPublic(m.getModifiers())) publicMethods.add(m.getName());
+                }
+                log(status, "Interface scan: " + className + " present. Public methods: "
+                        + summarizeMethods(publicMethods));
+            } catch (Throwable t) {
+                log(status, "Interface scan: " + className + " not available: " + shortCause(t));
+            }
+        }
+
+        try {
+            Class<?> carClass = Class.forName("android.car.Car");
+            StringBuilder fields = new StringBuilder();
+            for (Field f : carClass.getFields()) {
+                if (f.getType() != String.class || !Modifier.isStatic(f.getModifiers())) continue;
+                String name = f.getName();
+                if (name.contains("SERVICE") || name.contains("NAVIGATION") || name.contains("CLUSTER")) {
+                    try {
+                        Object v = f.get(null);
+                        fields.append(name).append('=').append(v).append("  ");
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+            if (fields.length() == 0) {
+                log(status, "Interface scan: android.car.Car exposes no NAVIGATION/CLUSTER service constants by name on this build.");
+            } else {
+                log(status, "Interface scan: android.car.Car service strings: " + fields.toString().trim());
+            }
+        } catch (Throwable t) {
+            log(status, "Interface scan: android.car.Car unavailable: " + shortCause(t));
+        }
+    }
+
+    /**
+     * The on-car result confirmed that android.car.Car.createCar(Context) is not present on this
+     * build. This helper logs all overloads and tries them in order rather than assuming a single
+     * signature and crashing with NoSuchMethodException on the first attempt.
+     */
+    private Object tryCreateCar(Class<?> carClass, Context context, StatusListener status) {
+        List<Method> overloads = new ArrayList<>();
+        for (Method m : carClass.getMethods()) {
+            if (m.getName().equals("createCar") && Modifier.isStatic(m.getModifiers())) {
+                overloads.add(m);
+            }
+        }
+        if (overloads.isEmpty()) {
+            log(status, "Cluster-info probe: android.car.Car has no createCar(...) overload at all on this build.");
+            return null;
+        }
+        StringBuilder found = new StringBuilder("Cluster-info probe: createCar overloads on this build: ");
+        for (Method m : overloads) found.append(describeParams(m)).append("  ");
+        log(status, found.toString());
+
+        for (Method m : overloads) {
+            try {
+                Class<?>[] paramTypes = m.getParameterTypes();
+                Object[] args = new Object[paramTypes.length];
+                for (int i = 0; i < paramTypes.length; i++) {
+                    args[i] = defaultArgFor(paramTypes[i], context);
+                }
+                Object car = m.invoke(null, args);
+                if (car != null) {
+                    log(status, "Cluster-info probe: createCar" + describeParams(m) + " succeeded.");
+                    return car;
+                }
+                log(status, "Cluster-info probe: createCar" + describeParams(m)
+                        + " returned null, trying next overload...");
+            } catch (Throwable t) {
+                Throwable cause = (t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null)
+                        ? t.getCause() : t;
+                log(status, "Cluster-info probe: createCar" + describeParams(m)
+                        + " threw " + cause + ", trying next overload...");
+            }
+        }
+        return null;
+    }
+
+    private Object defaultArgFor(Class<?> paramType, Context context) {
+        if (paramType.isAssignableFrom(context.getClass())) return context;
+        if (paramType == int.class) return 0;
+        if (paramType == long.class) return 0L;
+        if (paramType == boolean.class) return false;
+        return null;
+    }
+
+    private String describeParams(Method m) {
+        StringBuilder sb = new StringBuilder("(");
+        Class<?>[] params = m.getParameterTypes();
+        for (int i = 0; i < params.length; i++) {
+            if (i > 0) sb.append(", ");
+            sb.append(params[i].getSimpleName());
+        }
+        return sb.append(")").toString();
+    }
+
+    private String summarizeMethods(List<String> names) {
+        if (names.isEmpty()) return "<none>";
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < Math.min(12, names.size()); i++) {
+            if (i > 0) sb.append(", ");
+            sb.append(names.get(i));
+        }
+        if (names.size() > 12) sb.append(", ...");
+        return sb.toString();
+    }
+
+    private String shortCause(Throwable t) {
+        String message = t.getMessage();
+        String simple = t.getClass().getSimpleName();
+        return simple + (message == null || message.trim().isEmpty() ? "" : (": " + message));
+    }
 
     private void probeInstrumentClusterInfo(Context context, StatusListener status) {
         Object localCar = null;
@@ -110,6 +243,8 @@ public class NavigationRendererProbe {
                 return;
             }
             log(status, "Cluster-info probe: obtained " + navMgr.getClass().getName() + ".");
+            log(status, "Cluster-info probe: manager method names: "
+                    + summarizeMethods(listMethodNames(navMgr.getClass())));
 
             try {
                 Method getInfo = navMgr.getClass().getMethod("getInstrumentClusterInfo");
@@ -141,69 +276,12 @@ public class NavigationRendererProbe {
         }
     }
 
-    /**
-     * android.car.Car.createCar(...) has shipped with several different overloads across AAOS
-     * versions (Context-only, Context+Handler, Context+ServiceConnection, etc.) and this
-     * platform's android.car.jar doesn't have the single-arg one VehicleDataSource and the first
-     * cut of this probe both assumed - confirmed on-car via a NoSuchMethodException. Rather than
-     * guess a second specific signature and risk the same failure, this enumerates whatever
-     * createCar(...) overloads actually exist here, logs them for the record, and tries each in
-     * turn (Context for any Context-typed parameter, a harmless default for anything else -
-     * null for objects, 0/false for primitives) until one returns a non-null Car.
-     */
-    private Object tryCreateCar(Class<?> carClass, Context context, StatusListener status) {
-        List<Method> overloads = new ArrayList<>();
-        for (Method m : carClass.getMethods()) {
-            if (m.getName().equals("createCar") && Modifier.isStatic(m.getModifiers())) {
-                overloads.add(m);
-            }
+    private List<String> listMethodNames(Class<?> clazz) {
+        List<String> result = new ArrayList<>();
+        for (Method m : clazz.getMethods()) {
+            if (Modifier.isPublic(m.getModifiers())) result.add(m.getName());
         }
-        if (overloads.isEmpty()) {
-            log(status, "Cluster-info probe: android.car.Car has no createCar(...) overload at all on this build.");
-            return null;
-        }
-        StringBuilder found = new StringBuilder("Cluster-info probe: createCar overloads on this build: ");
-        for (Method m : overloads) found.append(describeParams(m)).append("  ");
-        log(status, found.toString());
-
-        for (Method m : overloads) {
-            try {
-                Class<?>[] paramTypes = m.getParameterTypes();
-                Object[] args = new Object[paramTypes.length];
-                for (int i = 0; i < paramTypes.length; i++) {
-                    args[i] = defaultArgFor(paramTypes[i], context);
-                }
-                Object car = m.invoke(null, args);
-                if (car != null) {
-                    log(status, "Cluster-info probe: createCar" + describeParams(m) + " succeeded.");
-                    return car;
-                }
-                log(status, "Cluster-info probe: createCar" + describeParams(m) + " returned null, trying next overload...");
-            } catch (Throwable t) {
-                Throwable cause = (t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null)
-                        ? t.getCause() : t;
-                log(status, "Cluster-info probe: createCar" + describeParams(m) + " threw " + cause + ", trying next overload...");
-            }
-        }
-        return null;
-    }
-
-    private Object defaultArgFor(Class<?> paramType, Context context) {
-        if (paramType.isAssignableFrom(context.getClass())) return context;
-        if (paramType == int.class) return 0;
-        if (paramType == long.class) return 0L;
-        if (paramType == boolean.class) return false;
-        return null; // Handler, ServiceConnection, Executor, etc. - null is a valid "no callback" value here
-    }
-
-    private String describeParams(Method m) {
-        StringBuilder sb = new StringBuilder("(");
-        Class<?>[] params = m.getParameterTypes();
-        for (int i = 0; i < params.length; i++) {
-            if (i > 0) sb.append(", ");
-            sb.append(params[i].getSimpleName());
-        }
-        return sb.append(")").toString();
+        return result;
     }
 
     private String findNavigationServiceConstant(StatusListener status, Class<?> carClass) {
@@ -215,11 +293,9 @@ public class NavigationRendererProbe {
         } catch (Throwable t) {
             log(status, "Cluster-info probe: reading CAR_NAVIGATION_SERVICE threw " + t);
         }
-        // Fallback: scan for any public static String constant with NAVIGATION in its name,
-        // in case the exact field name differs on this platform's android.car.jar.
         for (Field f : carClass.getFields()) {
             if (f.getType() != String.class || !Modifier.isStatic(f.getModifiers())) continue;
-            if (!f.getName().contains("NAVIGATION")) continue;
+            if (!f.getName().contains("NAVIGATION") && !f.getName().contains("CLUSTER")) continue;
             try {
                 Object v = f.get(null);
                 if (v instanceof String) {
@@ -254,8 +330,6 @@ public class NavigationRendererProbe {
         } catch (Throwable ignored) {
         }
     }
-
-    // ---- Check 2: direct bindService() against GWM's own privileged renderer service ----
 
     private void probeBindToFactoryRenderer(Context context, StatusListener status) {
         Intent intent = new Intent();
