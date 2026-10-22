@@ -1,7 +1,6 @@
 package com.clusterprobe;
 
 import android.app.Activity;
-import android.graphics.Color;
 import android.os.Bundle;
 import android.view.View;
 import android.view.WindowManager;
@@ -57,7 +56,12 @@ public class ClusterActivity extends Activity {
             DialView.useCaptureOverlay = getIntent().getBooleanExtra(EXTRA_USE_CAPTURE, DialView.useCaptureOverlay);
         }
 
-        getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.BLACK));
+        // IMPORTANT: no opaque background here. The window uses a translucent theme (see the
+        // manifest) specifically so the MAP_WINDOW themes' transparent cut-out can actually show
+        // whatever's on this display underneath us - an earlier version forced a solid black
+        // background here, which silently defeated every mask's transparency regardless of what
+        // was really behind it. DialView itself stays transparent except where it explicitly
+        // draws (dials, mask, text).
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
                 | WindowManager.LayoutParams.FLAG_FULLSCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
