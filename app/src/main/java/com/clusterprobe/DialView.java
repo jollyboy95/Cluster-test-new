@@ -29,7 +29,8 @@ public class DialView extends View {
         CREMA_GLASS("Crema (glass)", Kind.ROUND_PAIR, "crema_speed_dial_glass_600.png", "crema_rpm_dial_glass_600.png", null),
         CREMA_SOLID("Crema (solid)", Kind.ROUND_PAIR, "crema_speed_dial_solid_600.png", "crema_rpm_dial_solid_600.png", null),
         APEX_WIDE("Apex (wide map)", Kind.MAP_WINDOW, null, null, "apex_mask_wide_1920x720.png"),
-        APEX_TIGHT("Apex (tight map)", Kind.MAP_WINDOW, null, null, "apex_mask_tight_1920x720.png");
+        APEX_TIGHT("Apex (tight map)", Kind.MAP_WINDOW, null, null, "apex_mask_tight_1920x720.png"),
+        APEX_MAX("Apex (max map)", Kind.MAP_WINDOW, null, null, "apex_mask_max_1920x720.png");
 
         enum Kind { ROUND_PAIR, MAP_WINDOW }
         final String label; final Kind kind; final String speedAsset, rpmAsset, maskAsset;
