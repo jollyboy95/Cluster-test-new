@@ -7,11 +7,19 @@ android {
         applicationId "com.clusterprobe"
         minSdk 28
         targetSdk 28
-        versionCode 11
-        versionName "0.11"
+        versionCode 12
+        versionName "0.12"
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
+}
+
+dependencies {
+    // Shizuku: lets this app run a shell-UID helper (GwmLogcatUserService) to read logcat tags
+    // that belong to other processes - a normal app-UID process can't. Read-only; never used to
+    // touch the signature-protected car.ipk_setting.* interface. See GwmLogcatVehicleDataSource.
+    implementation 'dev.rikka.shizuku:api:13.1.5'
+    implementation 'dev.rikka.shizuku:provider:13.1.5'
 }

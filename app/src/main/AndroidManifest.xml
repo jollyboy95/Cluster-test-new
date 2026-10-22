@@ -13,6 +13,18 @@
         android:allowBackup="false"
         android:hardwareAccelerated="true">
         <uses-library android:name="android.car" android:required="false" />
+
+        <!-- Shizuku transport - lets this app receive the shell-UID binder once the user
+             authorizes it in the Shizuku app, so GwmLogcatUserService can run `logcat` under
+             shell UID. Read-only data path; see GwmLogcatVehicleDataSource. -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

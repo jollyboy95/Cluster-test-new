@@ -18,6 +18,8 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import rikka.shizuku.Shizuku;
+
 /**
  * Control panel. Runs on display 0 (the main head-unit screen), and drives ClusterActivity on
  * display 2 (the physical cluster). Everything here uses public Android APIs only - nothing
@@ -35,10 +37,25 @@ public class MainActivity extends android.app.Activity {
     private final Handler main = new Handler(Looper.getMainLooper());
     private boolean previewLoopRunning = false;
 
+    private final Shizuku.OnRequestPermissionResultListener shizukuPermListener =
+            (requestCode, grantResult) -> main.post(() -> {
+                boolean granted = grantResult == android.content.pm.PackageManager.PERMISSION_GRANTED;
+                appendLog("Shizuku permission " + (granted ? "granted" : "denied") + ".");
+                if (granted) {
+                    appendLog("Retrying GWM logcat data start now that permission is granted...");
+                    GwmLogcatVehicleDataSource.start(msg -> appendLog(msg));
+                }
+            });
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         CrashLogger.install(this);
+        try {
+            Shizuku.addRequestPermissionResultListener(shizukuPermListener);
+        } catch (Throwable ignored) {
+            // Shizuku binder not alive yet - fine, the button's own check handles that case too.
+        }
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -84,6 +101,16 @@ public class MainActivity extends android.app.Activity {
         addButton(root, "Stop live data (back to demo animation)", () -> {
             VehicleDataSource.stop();
             appendLog("Live data stopped - demo animation resumes on next relaunch of a dial window.");
+        });
+
+        addSection(root, "Live vehicle data (GWM logcat scrape via Shizuku - car.basic.*)");
+        addButton(root, "Start GWM logcat data", () -> {
+            appendLog("Starting GwmLogcatVehicleDataSource (Shizuku UserService -> logcat)...");
+            GwmLogcatVehicleDataSource.start(msg -> appendLog(msg));
+        });
+        addButton(root, "Stop GWM logcat data", () -> {
+            GwmLogcatVehicleDataSource.stop();
+            appendLog("GWM logcat data source stopped.");
         });
 
         addSection(root, "Experimental: capture display content");
@@ -253,6 +280,10 @@ public class MainActivity extends android.app.Activity {
     protected void onDestroy() {
         CaptureHelper.stop();
         OverlayManager.hideAll();
+        try {
+            Shizuku.removeRequestPermissionResultListener(shizukuPermListener);
+        } catch (Throwable ignored) {
+        }
         super.onDestroy();
     }
 
