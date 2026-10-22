@@ -56,9 +56,17 @@ public class MainActivity extends android.app.Activity {
         addButtonTo(themeRow, "Next >>", () -> cycleTheme(1));
         root.addView(themeRow);
 
-        addButton(root, "Launch on cluster (display " + CLUSTER_DISPLAY_ID + ")", () -> launchOnDisplay(CLUSTER_DISPLAY_ID));
-        addButton(root, "Launch on HUD (display " + HUD_DISPLAY_ID + ") - experimental", () -> launchOnDisplay(HUD_DISPLAY_ID));
+        addButton(root, "Launch on cluster (display " + CLUSTER_DISPLAY_ID + ") - Activity", () -> launchOnDisplay(CLUSTER_DISPLAY_ID));
+        addButton(root, "Launch on HUD (display " + HUD_DISPLAY_ID + ") - Activity, experimental", () -> launchOnDisplay(HUD_DISPLAY_ID));
         addButton(root, "Stop cluster window", this::stopCluster);
+
+        addSection(root, "Overlay window (sits above the stock nav layer)");
+        addButton(root, "Overlay on cluster (display " + CLUSTER_DISPLAY_ID + ")", () -> showOverlay(CLUSTER_DISPLAY_ID));
+        addButton(root, "Overlay on HUD (display " + HUD_DISPLAY_ID + ") - experimental", () -> showOverlay(HUD_DISPLAY_ID));
+        addButton(root, "Stop all overlays", () -> {
+            OverlayManager.hideAll();
+            appendLog("All overlay windows removed.");
+        });
 
         addSection(root, "Experimental: capture display content");
         addButton(root, "Test map capture (MediaProjection)", this::testCapture);
@@ -139,6 +147,19 @@ public class MainActivity extends android.app.Activity {
         }
     }
 
+    private void showOverlay(int displayId) {
+        appendLog("Requesting overlay window on display " + displayId + " (TYPE_APPLICATION_OVERLAY)...");
+        OverlayManager.show(getApplicationContext(), displayId, new OverlayManager.Result() {
+            @Override public void ok() {
+                main.post(() -> appendLog("Overlay added on display " + displayId
+                        + ". Check whether it's now ABOVE the stock nav graphics."));
+            }
+            @Override public void fail(String reason) {
+                main.post(() -> appendLog("Overlay on display " + displayId + " failed: " + reason));
+            }
+        });
+    }
+
     private void stopCluster() {
         if (ClusterActivity.current != null) {
             ClusterActivity.current.finish();
@@ -213,6 +234,7 @@ public class MainActivity extends android.app.Activity {
     @Override
     protected void onDestroy() {
         CaptureHelper.stop();
+        OverlayManager.hideAll();
         super.onDestroy();
     }
 
