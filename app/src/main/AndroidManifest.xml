@@ -8,6 +8,12 @@
     <uses-permission android:name="android.car.permission.CAR_ENERGY" />
     <uses-permission android:name="android.car.permission.CAR_EXTERIOR_ENVIRONMENT" />
     <uses-permission android:name="android.car.permission.CAR_POWERTRAIN" />
+    <!-- Standard AAOS permission for CarNavigationStatusManager.getInstrumentClusterInfo() -
+         a public, non-privileged READ of whatever cluster capabilities the registered renderer
+         (GWM's own service) has advertised. Confirmed "normal" protection level in AOSP. Never
+         used to call sendNavigationStateChange() or inject guidance data. See
+         NavigationRendererProbe and docs/H7_DISPLAY_ARCHITECTURE.md. -->
+    <uses-permission android:name="android.car.permission.CAR_NAVIGATION_MANAGER" />
     <!-- Shizuku's own permission, checked by Shizuku.checkSelfPermission()/requestPermission()
          once the app is authorized in the Shizuku app. See GwmLogcatVehicleDataSource. -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />

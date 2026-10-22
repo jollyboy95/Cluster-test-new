@@ -120,6 +120,17 @@ public class MainActivity extends android.app.Activity {
         addSection(root, "GWM adapter permission probe (com.tank.priborka / h9cluster both use this)");
         addButton(root, "Check GET_DATA permission", this::probeGwmGetDataPermission);
 
+        addSection(root, "AAOS cluster-renderer probe (read-only - see docs/H7_DISPLAY_ARCHITECTURE.md)");
+        addButton(root, "Probe NavigationRenderer / cluster-renderer service", () -> {
+            appendLog("Running NavigationRendererProbe (CarNavigationStatusManager.getInstrumentClusterInfo() "
+                    + "+ a bindService() permission check against GWM's own renderer service)...");
+            NavigationRendererProbe.run(getApplicationContext(), msg -> appendLog(msg));
+        });
+        addButton(root, "Stop cluster-renderer probe", () -> {
+            NavigationRendererProbe.stop();
+            appendLog("Cluster-renderer probe stopped, any bind torn down.");
+        });
+
         addSection(root, "Experimental: capture display content");
         addButton(root, "Test map capture (MediaProjection)", this::testCapture);
         Button toggleCapture = addButton(root, "Use captured frame in cluster: OFF", null);
@@ -357,6 +368,7 @@ public class MainActivity extends android.app.Activity {
     protected void onDestroy() {
         CaptureHelper.stop();
         OverlayManager.hideAll();
+        NavigationRendererProbe.stop();
         try {
             Shizuku.removeRequestPermissionResultListener(shizukuPermListener);
         } catch (Throwable ignored) {
