@@ -27,6 +27,7 @@ public class MainActivity extends android.app.Activity {
 
     private static final int REQ_CAPTURE = 4201;
     private static final int CLUSTER_DISPLAY_ID = 2;
+    private static final int HUD_DISPLAY_ID = 3; // per earlier "List displays" findings - verify on your unit
 
     private TextView log;
     private TextView themeLabel;
@@ -55,7 +56,8 @@ public class MainActivity extends android.app.Activity {
         addButtonTo(themeRow, "Next >>", () -> cycleTheme(1));
         root.addView(themeRow);
 
-        addButton(root, "Launch on cluster (display " + CLUSTER_DISPLAY_ID + ")", this::launchOnCluster);
+        addButton(root, "Launch on cluster (display " + CLUSTER_DISPLAY_ID + ")", () -> launchOnDisplay(CLUSTER_DISPLAY_ID));
+        addButton(root, "Launch on HUD (display " + HUD_DISPLAY_ID + ") - experimental", () -> launchOnDisplay(HUD_DISPLAY_ID));
         addButton(root, "Stop cluster window", this::stopCluster);
 
         addSection(root, "Experimental: capture display content");
@@ -117,23 +119,23 @@ public class MainActivity extends android.app.Activity {
         }
     }
 
-    private void launchOnCluster() {
+    private void launchOnDisplay(int displayId) {
         try {
             ActivityOptions opts = ActivityOptions.makeBasic();
-            opts.setLaunchDisplayId(CLUSTER_DISPLAY_ID);
+            opts.setLaunchDisplayId(displayId);
             Intent i = new Intent(this, ClusterActivity.class);
             i.putExtra(ClusterActivity.EXTRA_THEME_ORDINAL, DialView.theme.ordinal());
             i.putExtra(ClusterActivity.EXTRA_USE_CAPTURE, DialView.useCaptureOverlay);
             i.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
             startActivity(i, opts.toBundle());
-            appendLog("Launch requested on display " + CLUSTER_DISPLAY_ID + " via ActivityOptions.setLaunchDisplayId.");
+            appendLog("Launch requested on display " + displayId + " via ActivityOptions.setLaunchDisplayId.");
         } catch (SecurityException se) {
-            appendLog("Denied: " + se.getMessage()
+            appendLog("Denied on display " + displayId + ": " + se.getMessage()
                     + "  (this app likely lacks the permission a normal app needs to target a non-default "
-                    + "display from in-process; \"am start --display " + CLUSTER_DISPLAY_ID + "\" from adb shell "
+                    + "display from in-process; \"am start --display " + displayId + "\" from adb shell "
                     + "worked earlier because the shell UID has more latitude than a regular app).");
         } catch (Exception e) {
-            appendLog("Launch failed: " + e);
+            appendLog("Launch on display " + displayId + " failed: " + e);
         }
     }
 
