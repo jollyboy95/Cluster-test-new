@@ -307,3 +307,43 @@ gets back while Android Auto is actively navigating — no display, coding, or c
 change, nothing written anywhere, parked testing only, and trivially removable if it
 doesn't yield anything. I have not implemented this yet and am not proposing to touch
 Newcastle Dash, the Shizuku integration, or the live GWM vehicle-data reader to do it.
+
+**Update (v0.18):** implemented as `NavigationRendererProbe.java`, wired into MainActivity as
+"Probe NavigationRenderer / cluster-renderer service". Runs two read-only checks: (1)
+`CarNavigationStatusManager.getInstrumentClusterInfo()` — public, non-privileged, reports
+whatever cluster capabilities the registered renderer has advertised; (2) a plain
+`bindService()` against GWM's own `InstrumentClusterRenderingServiceImpl`, to directly confirm
+whether its `BIND_INSTRUMENT_CLUSTER_RENDERER_SERVICE` requirement actually rejects a normal
+app. Not yet run on-car — next on-car test should use this button and report what each check
+logs.
+
+## 10. Addendum: how display 1 is actually shared between Android Auto and CarPlay
+
+Not covered above, but visible in the same `window-log.txt`/`layers-log.txt`/`android-auto-log.txt`
+captures and worth recording since it bears on when/whether the probe in §9 will see anything:
+
+- **Both apps keep a persistent window on display 1 at once, not just the active one.**
+  `layers-log.txt`'s container tree for display 1 lists two `SurfaceView`-backed windows in its
+  "above app windows" layer simultaneously — one for `com.gwm.app.aap` (token `3afd66c`), one for
+  `com.gdc.carplay` (token `866de2f`) — both present in the same capture. `window-log.txt` shows
+  only one as `mCurrentFocus` (CarPlay, in this capture) — so GWM doesn't create/destroy the
+  window per session, it parks both and switches focus between them.
+- **There's a named arbitration mechanism for it.** `GDC_CARPLAY`'s own log tag (PID 2920) emits
+  lines like `ModeStatusBase onStatusChange borrowId:2, isActive:false` /
+  `borrowId:4, isActive:true` (`android-auto-log.txt` ~line 1181, 1225) — CarPlay's state machine
+  models taking over the shared projection slot (and likely the audio/mic route under a different
+  `borrowId`) explicitly as *borrowing* it from whichever protocol would otherwise hold it.
+- **CarPlay also keeps a second, separate window on display 0** (the main infotainment screen) —
+  a background+`SurfaceView` pair in display 0's own "above app windows" layer (`layers-log.txt`,
+  near the `com.shere.easytouch.holo`/HVAC Container entries), independent of its display-1
+  window — presumably its own connection/settings UI.
+- **CarPlay receives a live occlusion feed.** `SysDialogStatus onGwmSysDialogChanged` log lines
+  (`android-auto-log.txt` ~1217-1250) report every system overlay's window type, bounds and
+  visibility to CarPlay in real time (voice-assistant HMI bubble, HVAC panel, the EasyTouch
+  floating button, CarPlay's own dialog) - a mechanism that doesn't appear anywhere in
+  `com.gwm.android.multidisplay`'s (the gauge side's) logging in these captures.
+
+Practical implication for §9's probe: whichever of `com.gwm.app.aap`/`com.gdc.carplay` is the
+current "borrower" of display 1 is the one actually feeding guidance data, so note which
+protocol/phone is connected when running the probe - a null/silent result with CarPlay active
+doesn't rule out Android Auto's path working, and vice versa.
