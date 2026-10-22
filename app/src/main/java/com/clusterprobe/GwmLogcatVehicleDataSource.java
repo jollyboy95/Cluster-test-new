@@ -41,7 +41,7 @@ public class GwmLogcatVehicleDataSource {
     private IGwmLogcatService service;
     private final EnumSet<Prop> seen = EnumSet.noneOf(Prop.class);
 
-    private enum Prop { SPEED, RPM, FUEL, RANGE_MAIN_TANK, RANGE_SUB_TANK, RANGE_EV, RANGE_GENERIC, TEMP, GEAR }
+    private enum Prop { SPEED, RPM, FUEL, RANGE_MAIN_TANK, RANGE_SUB_TANK, RANGE_EV, RANGE_GENERIC, ODOMETER, TEMP, GEAR }
 
     // Named gauge-message patterns (from GaugeAdapter::decodeMsg_read style log lines).
     private static final Pattern SPEED_NAMED = Pattern.compile("GWMVehSpd.*?value\\s+([0-9.]+)");
@@ -64,6 +64,9 @@ public class GwmLogcatVehicleDataSource {
     private static final Pattern RANGE_SUB_TANK_KV = Pattern.compile("car\\.basic\\.sub_tank_remain_odometer=([0-9.]+)");
     private static final Pattern RANGE_EV_KV = Pattern.compile("car\\.basic\\.ev_remain_odometer_status=([0-9.]+)");
     private static final Pattern RANGE_GENERIC_KV = Pattern.compile("car\\.basic\\.remain_odometer=([0-9.]+)");
+    // Total distance driven (lifetime), not remaining range - the user asked for this
+    // specifically after seeing it missing on-car. Most-specific key first, same pattern as range.
+    private static final Pattern ODOMETER_KV = Pattern.compile("car\\.basic\\.(?:total_odometer|accumulated_odometer)=([0-9.]+)");
     private static final Pattern TEMP_KV = Pattern.compile("car\\.basic\\.outside_temp=(-?[0-9.]+)");
     private static final Pattern GEAR_KV = Pattern.compile("car\\.basic\\.(?:current_gear|gear_status)=(\\S+)");
 
@@ -213,6 +216,10 @@ public class GwmLogcatVehicleDataSource {
             DialView.pushLiveRangeKm(parseFloat(m.group(1)));
             noteFirstSeen(Prop.RANGE_GENERIC, "range (\"remain_odometer\" - generic key, no "
                     + "tank/EV-specific reading seen on this build)");
+        }
+        if ((m = ODOMETER_KV.matcher(line)).find()) {
+            DialView.pushLiveOdometerKm(parseFloat(m.group(1)));
+            noteFirstSeen(Prop.ODOMETER, "odometer (total distance)");
         }
         if ((m = TEMP_KV.matcher(line)).find()) {
             DialView.pushLiveTempC(parseFloat(m.group(1)));

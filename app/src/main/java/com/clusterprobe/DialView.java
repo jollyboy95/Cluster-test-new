@@ -74,6 +74,7 @@ public class DialView extends View {
      *  (e.g. no speed-limit sign recognition) simply never appears instead of showing a fake
      *  placeholder number. */
     public static volatile Float liveRangeKm = null;
+    public static volatile Float liveOdometerKm = null;
     public static volatile Float liveTempC = null;
     public static volatile String liveGear = null;
     public static volatile Integer speedLimitKmh = null;
@@ -83,6 +84,7 @@ public class DialView extends View {
     public static void pushLiveSpeed(float kmh) { liveMode = true; liveSpeedKmh = kmh; broadcastLive(); }
     public static void pushLiveRpm(float rpm) { liveMode = true; liveRpm = rpm; broadcastLive(); }
     public static void pushLiveRangeKm(float km) { liveRangeKm = km; invalidateAll(); }
+    public static void pushLiveOdometerKm(float km) { liveOdometerKm = km; invalidateAll(); }
     public static void pushLiveTempC(float c) { liveTempC = c; invalidateAll(); }
     public static void pushLiveGear(String label) { liveGear = label; invalidateAll(); }
     public static void pushSpeedLimitKmh(int limit) { speedLimitKmh = limit; invalidateAll(); }
@@ -106,6 +108,7 @@ public class DialView extends View {
     private Bitmap speedBmp, rpmBmp, maskBmp;
     private Theme loadedTheme;
     private final Paint bmpPaint = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.ANTI_ALIAS_FLAG);
+    private final Paint bgPaint = new Paint();
     private final Paint arcPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint needle = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -308,6 +311,20 @@ public class DialView extends View {
     }
 
     private void drawNewcastleDash(Canvas canvas, int w, int h) {
+        // Opaque backing everywhere EXCEPT a centre "map window" hole, so the stock speedo,
+        // odometer row and right-side widgets (energy %, coolant bar, etc.) are actually hidden
+        // behind our own panels instead of showing through - on-car this theme was leaving most
+        // of the canvas untouched/transparent, so the stock dials stayed fully visible around
+        // our panels, not just in the intended map area. Four rects framing the hole, rather
+        // than a full-canvas fill plus a PorterDuff "clear" punch-out, so this doesn't depend on
+        // CLEAR-mode compositing behaving the same on every GPU/driver this runs on.
+        float mapL = w * 0.29f, mapT = h * 0.08f, mapR = w * 0.80f, mapB = h * 0.93f;
+        bgPaint.setColor(0xFF0B0D10);
+        canvas.drawRect(0, 0, w, mapT, bgPaint);              // top strip
+        canvas.drawRect(0, mapB, w, h, bgPaint);               // bottom strip
+        canvas.drawRect(0, mapT, mapL, mapB, bgPaint);         // left column
+        canvas.drawRect(mapR, mapT, w, mapB, bgPaint);         // right column
+
         // Left: arc speed dial with big number + speed-limit badge.
         float dialCx = w * 0.14f, dialCy = h * 0.52f;
         float dialR = Math.min(w * 0.11f, h * 0.38f);
@@ -369,19 +386,33 @@ public class DialView extends View {
         }
         textPaint.setTextAlign(Paint.Align.CENTER);
 
-        // Bottom-left: range/fuel, only if we have a real reading.
+        // Bottom-left: range and odometer, each only if we have a real reading. Odometer sits
+        // alongside range the same way the stock dash shows both ("583 km" fuel range next to
+        // "34246 km" total) rather than just range on its own.
         Float range = liveRangeKm;
-        if (range != null) {
+        Float odo = liveOdometerKm;
+        if (range != null || odo != null) {
             float blX0 = w * 0.015f, blY1 = h * 0.97f;
-            float blW = w * 0.2f, blH = h * 0.14f;
+            float blW = w * (odo != null && range != null ? 0.3f : 0.2f), blH = h * 0.14f;
             drawPanel(canvas, blX0, blY1 - blH, blX0 + blW, blY1, blH * 0.22f);
             textPaint.setTextAlign(Paint.Align.LEFT);
-            textPaint.setTextSize(blH * 0.26f);
-            textPaint.setAlpha(190);
-            canvas.drawText("RANGE", blX0 + blW * 0.1f, blY1 - blH * 0.7f, textPaint);
-            textPaint.setAlpha(255);
-            textPaint.setTextSize(blH * 0.44f);
-            canvas.drawText(Math.round(range) + " km", blX0 + blW * 0.1f, blY1 - blH * 0.22f, textPaint);
+            if (range != null) {
+                textPaint.setTextSize(blH * 0.26f);
+                textPaint.setAlpha(190);
+                canvas.drawText("RANGE", blX0 + blW * 0.06f, blY1 - blH * 0.7f, textPaint);
+                textPaint.setAlpha(255);
+                textPaint.setTextSize(blH * 0.44f);
+                canvas.drawText(Math.round(range) + " km", blX0 + blW * 0.06f, blY1 - blH * 0.22f, textPaint);
+            }
+            if (odo != null) {
+                float odoX = blX0 + blW * (range != null ? 0.56f : 0.06f);
+                textPaint.setTextSize(blH * 0.26f);
+                textPaint.setAlpha(190);
+                canvas.drawText("ODO", odoX, blY1 - blH * 0.7f, textPaint);
+                textPaint.setAlpha(255);
+                textPaint.setTextSize(blH * 0.34f);
+                canvas.drawText(Math.round(odo) + " km", odoX, blY1 - blH * 0.22f, textPaint);
+            }
             textPaint.setTextAlign(Paint.Align.CENTER);
         }
 
