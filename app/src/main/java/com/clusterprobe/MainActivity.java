@@ -74,7 +74,7 @@ public class MainActivity extends android.app.Activity {
         toggleCapture.setOnClickListener(v -> {
             DialView.useCaptureOverlay = !DialView.useCaptureOverlay;
             toggleCapture.setText("Use captured frame in cluster: " + (DialView.useCaptureOverlay ? "ON" : "OFF"));
-            if (ClusterActivity.current != null) ClusterActivity.current.applyThemeChange();
+            ClusterActivity.applyThemeChangeToAll();
             appendLog("Capture overlay " + (DialView.useCaptureOverlay ? "enabled" : "disabled") + " for MAP_WINDOW themes.");
         });
 
@@ -111,7 +111,7 @@ public class MainActivity extends android.app.Activity {
         idx = (idx + dir + vals.length) % vals.length;
         DialView.theme = vals[idx];
         themeLabel.setText("Theme: " + DialView.theme.label);
-        if (ClusterActivity.current != null) ClusterActivity.current.applyThemeChange();
+        ClusterActivity.applyThemeChangeToAll();
         appendLog("Theme set to " + DialView.theme.label);
     }
 
@@ -161,9 +161,9 @@ public class MainActivity extends android.app.Activity {
     }
 
     private void stopCluster() {
-        if (ClusterActivity.current != null) {
-            ClusterActivity.current.finish();
-            appendLog("Cluster window closed.");
+        if (ClusterActivity.hasAnyOpen()) {
+            ClusterActivity.stopAll();
+            appendLog("Closed all open cluster/HUD windows.");
         } else {
             appendLog("No cluster window is currently open (from this app's point of view).");
         }
