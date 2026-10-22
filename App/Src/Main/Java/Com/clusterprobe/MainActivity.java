@@ -47,6 +47,7 @@ public class MainActivity extends Activity {
         idField.setHint("Display id");
         root.addView(idField);
 
+        root.addView(button("H7 THEME PREVIEW (6 CONCEPTS)", v -> startActivity(new Intent(this, ThemePreviewActivity.class))));
         root.addView(button("1. List displays", v -> listDisplays()));
         root.addView(button("2. Method A: overlay window", v -> showOverlay()));
         root.addView(button("NEW: MAP-FIRST PREVIEW (A) - PARKED ONLY", v -> showMapFirst()));

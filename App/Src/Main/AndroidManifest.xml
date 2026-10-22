@@ -16,6 +16,8 @@
             </intent-filter>
         </activity>
 
+        <activity android:name="com.clusterprobe.ThemePreviewActivity" android:exported="false" />
+
         <activity
             android:name="com.clusterprobe.ClusterActivity"
             android:exported="false" />
