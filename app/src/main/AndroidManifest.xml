@@ -5,6 +5,9 @@
          public AAOS API, not GWM's private adapter. See VehicleDataSource.java. -->
     <uses-permission android:name="android.car.permission.CAR_SPEED" />
     <uses-permission android:name="android.car.permission.CAR_ENGINE_DETAILED" />
+    <uses-permission android:name="android.car.permission.CAR_ENERGY" />
+    <uses-permission android:name="android.car.permission.CAR_EXTERIOR_ENVIRONMENT" />
+    <uses-permission android:name="android.car.permission.CAR_POWERTRAIN" />
     <application
         android:label="ClusterProbe"
         android:allowBackup="false"
