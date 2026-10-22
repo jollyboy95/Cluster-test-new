@@ -26,7 +26,37 @@ jobs:
         uses: android-actions/setup-android@v4
 
       - name: Assemble debug APK
-        run: gradle assembleDebug --no-daemon
+        id: assemble
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          gradle assembleDebug --no-daemon --warning-mode all 2>&1 | tee build_output.log
+
+      - name: Surface build errors as annotations
+        if: always()
+        run: |
+          if [ -f build_output.log ]; then
+            grep -nE "error:|FAILURE|Exception|what went wrong|\* Where|\* What went wrong" build_output.log \
+              | tail -n 60 \
+              | while IFS= read -r line; do
+                  safe=$(echo "$line" | sed 's/%/pct/g')
+                  echo "::error::${safe}"
+                done
+          else
+            echo "::error::build_output.log was not created - gradle may have failed before producing output."
+          fi
+
+      - name: Fail job if assemble failed
+        if: steps.assemble.outcome == 'failure'
+        run: exit 1
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build_output.log
+          if-no-files-found: ignore
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
