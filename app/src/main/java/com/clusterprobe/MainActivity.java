@@ -2,6 +2,8 @@ package com.clusterprobe;
 
 import android.app.ActivityOptions;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.pm.PermissionInfo;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.hardware.display.DisplayManager;
@@ -28,6 +30,8 @@ import rikka.shizuku.Shizuku;
 public class MainActivity extends android.app.Activity {
 
     private static final int REQ_CAPTURE = 4201;
+    private static final int REQ_GWM_GET_DATA = 4202;
+    private static final String GWM_GET_DATA_PERMISSION = "com.gwm.android.adapter.permission.GET_DATA";
     private static final int CLUSTER_DISPLAY_ID = 2;
     private static final int HUD_DISPLAY_ID = 3; // per earlier "List displays" findings - verify on your unit
 
@@ -112,6 +116,9 @@ public class MainActivity extends android.app.Activity {
             GwmLogcatVehicleDataSource.stop();
             appendLog("GWM logcat data source stopped.");
         });
+
+        addSection(root, "GWM adapter permission probe (com.tank.priborka / h9cluster both use this)");
+        addButton(root, "Check GET_DATA permission", this::probeGwmGetDataPermission);
 
         addSection(root, "Experimental: capture display content");
         addButton(root, "Test map capture (MediaProjection)", this::testCapture);
@@ -212,6 +219,76 @@ public class MainActivity extends android.app.Activity {
         } else {
             appendLog("No cluster window is currently open (from this app's point of view).");
         }
+    }
+
+    /**
+     * Read-only diagnostic: does this GWM build actually let a normal app hold
+     * com.gwm.android.adapter.permission.GET_DATA? Two independent third-party apps
+     * (com.tank.priborka, net.adminrunet.h9cluster) use it as their primary vehicle-data path
+     * (not a fallback like SmartSplit treats it), which only makes sense if it's grantable to a
+     * normal app - but SmartSplit's own "gwm_adapter unavailable or permission denied" string
+     * shows it can also fail, so this checks for real rather than assuming either way. Never
+     * touches car.ipk_setting.* or any write/theme-coding interface - GET_DATA is a read
+     * permission on a different, unrelated GWM service.
+     */
+    private void probeGwmGetDataPermission() {
+        PackageManager pm = getPackageManager();
+        try {
+            PermissionInfo info = pm.getPermissionInfo(GWM_GET_DATA_PERMISSION, 0);
+            appendLog("GET_DATA exists on this device. protectionLevel=0x"
+                    + Integer.toHexString(info.protectionLevel) + " (" + decodeProtectionLevel(info.protectionLevel) + ")"
+                    + (info.packageName != null ? "  declared by " + info.packageName : ""));
+        } catch (PackageManager.NameNotFoundException e) {
+            appendLog("GET_DATA permission isn't registered on this device at all - the service "
+                    + "that declares it (GwmAdapterServer or similar) may not be installed/active here.");
+            return;
+        } catch (Throwable t) {
+            appendLog("Couldn't read GET_DATA's PermissionInfo: " + t);
+        }
+
+        int checkResult = checkSelfPermission(GWM_GET_DATA_PERMISSION);
+        if (checkResult == PackageManager.PERMISSION_GRANTED) {
+            appendLog("GET_DATA is already GRANTED to ClusterProbe.");
+            return;
+        }
+        appendLog("GET_DATA not currently granted - requesting it now (watch for a system prompt, "
+                + "or it may resolve silently if it's a normal/signature-mismatched permission).");
+        try {
+            requestPermissions(new String[]{GWM_GET_DATA_PERMISSION}, REQ_GWM_GET_DATA);
+        } catch (Throwable t) {
+            appendLog("requestPermissions() threw: " + t);
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != REQ_GWM_GET_DATA) return;
+        boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+        appendLog("GET_DATA permission request result: " + (granted ? "GRANTED" : "DENIED")
+                + (granted ? " - real FDBus-based vehicle data access may be viable here, worth "
+                    + "building a proper data source for it." : " - this GWM build is blocking it for "
+                    + "third-party apps, matching com.tank.priborka not working on this car either."));
+    }
+
+    /** Manual decode instead of PermissionInfo.protectionToString() - that's a real framework
+     *  method that must exist on-DEVICE at runtime (this head unit is Android 9 / API 28, and
+     *  the method's exact API-level floor isn't confirmed), whereas these are plain int
+     *  constants that get compiled in as literals - zero risk of a NoSuchMethodError on-device
+     *  either way. Base encoding (0=normal,1=dangerous,2=signature,3=signatureOrSystem) has been
+     *  stable since API 1. */
+    private static String decodeProtectionLevel(int level) {
+        int base = level & 0xf;
+        String baseStr;
+        switch (base) {
+            case 0: baseStr = "normal"; break;
+            case 1: baseStr = "dangerous"; break;
+            case 2: baseStr = "signature"; break;
+            case 3: baseStr = "signatureOrSystem"; break;
+            default: baseStr = "unknown base " + base; break;
+        }
+        int flags = level & ~0xf;
+        return flags == 0 ? baseStr : baseStr + " + extra flags 0x" + Integer.toHexString(flags);
     }
 
     private void testCapture() {

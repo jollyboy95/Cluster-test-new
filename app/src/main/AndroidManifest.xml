@@ -11,6 +11,17 @@
     <!-- Shizuku's own permission, checked by Shizuku.checkSelfPermission()/requestPermission()
          once the app is authorized in the Shizuku app. See GwmLogcatVehicleDataSource. -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+
+    <!-- GWM's own adapter data permission. Confirmed present (via GwmAdapterServer.apk's own
+         manifest) and confirmed used as the PRIMARY data path by two independent third-party
+         cluster apps (com.tank.priborka, net.adminrunet.h9cluster) rather than a fallback -
+         SmartSplit's own string "gwm_adapter unavailable or permission denied" suggests it's
+         sometimes denied, which is exactly what this probe is for. Declaring it here does not
+         grant it - MainActivity's "Check GET_DATA permission" button checks/requests it the
+         normal Android runtime-permission way and reports the real protectionLevel straight
+         from this device's own PackageManager. Read-only data permission; unrelated to the
+         signature-protected car.ipk_setting.* write interface this project stays away from. -->
+    <uses-permission android:name="com.gwm.android.adapter.permission.GET_DATA" />
     <application
         android:label="ClusterProbe"
         android:allowBackup="false"
