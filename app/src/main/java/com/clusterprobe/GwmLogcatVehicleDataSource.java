@@ -19,7 +19,7 @@ import rikka.shizuku.Shizuku;
 /**
  * Reads live vehicle data by tailing the SAME debug logcat stream GWM's own factory adapter
  * process already writes to (tags GA-server/GA-client/GA-ServiceImpl/MyDataAdapter/Information,
- * etc.) and regex-matching the car.basic.*/named property lines out of it - confirmed as the
+ * etc.) and regex-matching the car.basic.* / named property lines out of it - confirmed as the
  * real working mechanism by reverse-reading the SmartSplit APK's strings (see project notes),
  * not guessed. This is read-only: it only ever reads an existing debug log, via a `logcat`
  * child process spawned under shell UID through Shizuku's sanctioned UserService API. It never
