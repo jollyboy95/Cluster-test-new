@@ -347,3 +347,28 @@ Practical implication for §9's probe: whichever of `com.gwm.app.aap`/`com.gdc.c
 current "borrower" of display 1 is the one actually feeding guidance data, so note which
 protocol/phone is connected when running the probe - a null/silent result with CarPlay active
 doesn't rule out Android Auto's path working, and vice versa.
+
+## 11. Closed line of inquiry: display-capture fallback (confirmed dead, on-car)
+
+Tested live on-car via Shizuku's shell-UID access (read-only, parked): whether
+`screencap`/`screenrecord` could grab display 1's live AA/CarPlay map directly, as a fallback
+to feed into a ClusterProbe-drawn overlay if the guidance-data route (§6 Option C) doesn't pan
+out. Confirmed dead, with evidence, not just untried:
+
+- `adb shell find /system /vendor -iname "screencap*"` and `-iname "screenrecord*"` both
+  returned **nothing** - neither binary exists anywhere on this device's `/system` or `/vendor`
+  partitions.
+- `adb shell /system/bin/screencap ...` (full path, bypassing `PATH` entirely) failed with
+  `not found`, exit code 127 - genuinely absent, not merely off the shell's `PATH`.
+- `/system/bin` does contain `tinycap` - this is unrelated (ALSA/tinyalsa **audio** PCM
+  capture, not display/video capture), a name collision only.
+- Every display already reports `FLAG_SECURE` in the `dumpsys display` capture used in §2.
+
+Both standard AOSP display-capture routes are now ruled out independently: MediaProjection
+(no permission dialog shipped on this head unit, per earlier on-car testing) and
+`screencap`/`screenrecord` (binaries stripped entirely). `screencap`/`screenrecord` are present
+on essentially every stock Android build, so their absence here, combined with `FLAG_SECURE` on
+every display, reads as a deliberate lockdown rather than an oversight. This closes off
+"copy the AA video frame directly" as a viable fallback - the two remaining live candidates are
+§9's guidance-data probe (v0.18, not yet run on-car) and an independently-drawn map from GPS +
+map tiles, with no dependency on AA/CarPlay's own video at all.
