@@ -435,8 +435,30 @@ public class NavigationRendererProbe {
                 log(status, "Nav-focus-owner probe: getCarManager(APP_FOCUS_SERVICE) returned null.");
                 return;
             }
+            List<String> allMethodNames = listMethodNames(focusMgr.getClass());
             log(status, "Nav-focus-owner probe: obtained " + focusMgr.getClass().getName()
-                    + ". Methods: " + summarizeMethods(listMethodNames(focusMgr.getClass())));
+                    + ". Methods (first 12): " + summarizeMethods(allMethodNames));
+            // v0.25: the first-12 summary above wasn't enough to find this build's real
+            // focus-owner accessor (getAppTypeOwner(int) doesn't exist here - see below). Log the
+            // COMPLETE method list once, with full signatures (name + parameter types, since two
+            // methods can share a name with different overloads - e.g. abandonAppFocus appeared
+            // twice in the truncated list, which is exactly this case), so the real accessor name
+            // on THIS platform can be read straight off the log instead of guessed at again.
+            List<String> fullSignatures = new ArrayList<>();
+            for (Method m : focusMgr.getClass().getMethods()) {
+                if (!Modifier.isPublic(m.getModifiers())) continue;
+                fullSignatures.add(m.getName() + describeParams(m));
+            }
+            log(status, "Nav-focus-owner probe: FULL method list (" + fullSignatures.size() + "): "
+                    + String.join(", ", fullSignatures));
+            // Also call out anything with "owner" in the name specifically, since that's the
+            // concept we're actually looking for and it may not be called getAppTypeOwner here.
+            List<String> ownerLike = new ArrayList<>();
+            for (String sig : fullSignatures) {
+                if (sig.toLowerCase(java.util.Locale.ROOT).contains("owner")) ownerLike.add(sig);
+            }
+            log(status, "Nav-focus-owner probe: method(s) with \"owner\" in the name: "
+                    + (ownerLike.isEmpty() ? "<none>" : String.join(", ", ownerLike)));
 
             Method owner = null;
             for (Method m : focusMgr.getClass().getMethods()) {
@@ -448,7 +470,8 @@ public class NavigationRendererProbe {
             }
             if (owner == null) {
                 log(status, "Nav-focus-owner probe: no getAppTypeOwner(int) method on this build's "
-                        + "manager - can't identify the current navigation-focus owner this way.");
+                        + "manager - can't identify the current navigation-focus owner that way. See the "
+                        + "full method list just logged above for whatever this platform calls it instead.");
                 return;
             }
             int navType = 1; // CarAppFocusManager.APP_FOCUS_TYPE_NAVIGATION's documented value

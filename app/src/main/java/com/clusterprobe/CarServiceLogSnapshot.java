@@ -47,7 +47,18 @@ public class CarServiceLogSnapshot {
     private static final String[] KEYWORDS = {
             "car_service", "icar", "carservice", "carservicehelper", "denied",
             "securityexception", "illegalstateexception", "avc:", "not allowed",
-            "permission denial", "binder"
+            "permission denial", "binder",
+            // v0.25: com.gwm.app.aap (the factory Android Auto receiver)-specific tokens, added so
+            // a snapshot taken WHILE Android Auto is actively projecting navigation might surface
+            // which cluster profile/CLUSTER_TYPE it actually loaded on this car - every one of the
+            // 67 shipped .properties profiles found in AndroidAuto.apk showed a 600x350 inset
+            // regardless of CLUSTER_TYPE, but mask_cluster_map.png is 1920x620, so something can
+            // render bigger than any sampled profile - this is read-only logcat scraping, the same
+            // mechanism as every other keyword above, just a different set of substrings to match.
+            // No prior on-car run captured this because AA wasn't confirmed actively projecting at
+            // the time - worth one more run specifically while nav guidance is live on-screen.
+            "com.gwm.app.aap", "cluster_type", "map_only", "map_tbt", "tbt_only",
+            "instrumentcluster", "navigationstatusservice", "cluster_display"
     };
 
     private static final int MAX_MATCHES_RETURNED = 20;

@@ -187,3 +187,109 @@ identity/signing, not a discoverable technique. The one live, testable, unprivil
 is the `CLUSTER_STATE` broadcast listener added this version - not video, but possibly real
 cluster/navigation state data, which would still be useful for ClusterProbe's own rendered
 dash even if the literal video frame stays out of reach.
+
+## v0.25: on-car confirmation round (Car-connect genuinely works now) + two closing diagnostics +
+## phone-companion research (no standalone map built)
+
+**On-car result, not yet in this doc:** a v0.24 run (or very close to it) showed `Car-connect`
+actually succeeding for the first time - `createCar(Context, ServiceConnection) -> connected
+(onServiceConnected fired)`. That makes the full 44-manager sweep's results trustworthy for the
+first time: `cluster_service` and `car_navigation_service` were both cleanly denied with named
+signature permissions (not a timing artifact), which is the final, confirmed word on the standard
+AAOS cluster/navigation manager path - it closes, not "remains to be tried." A long list of
+`GwmCar*Manager` classes (lighting, HVAC, seat control, driving control, DMS/DVR, bodywork,
+parking, dock, fragrance, new-energy, tbox, fota, gnss, info, power, etc.) came back obtainable -
+worth recording, but obtaining the manager handle only proves the `IBinder` is reachable, not that
+any individual method on it is unprotected at call time. None of those methods have been called.
+`CarAppFocusManager` (`app_focus`) was also obtainable - the one manager in that whole sweep that's
+actually relevant to navigation-focus arbitration, but this build's manager has no
+`getAppTypeOwner(int)` method, and the probe's old 12-name-capped method summary wasn't enough to
+find what it's called instead.
+
+**Two read-only diagnostics finished this version, both folded into existing buttons:**
+
+- `NavigationRendererProbe`'s nav-focus-owner probe now logs `CarAppFocusManager`'s **complete**
+  method list (full signatures, not capped at 12) plus a specific line for any method with "owner"
+  in the name, so the real accessor on this platform can be read straight off the log instead of
+  guessed at again.
+- `CaptureHelper.checkCaptureIntentResolvable()` - a `PackageManager.queryIntentActivities()` check
+  against `MediaProjectionManager.createScreenCaptureIntent()`, run from the "Test map capture"
+  button BEFORE `startActivityForResult()` is ever called. An earlier on-car run already threw
+  `ActivityNotFoundException` from that call; this confirms (rather than infers from one exception)
+  whether the capture-consent screen is genuinely absent system-wide on this build. Never launches
+  anything itself.
+- `CarServiceLogSnapshot`'s keyword filter also now matches `com.gwm.app.aap`-specific tokens
+  (`cluster_type`, `map_only`/`map_tbt`/`tbt_only`, `navigationstatusservice`, `cluster_display`,
+  etc.) - worth re-running specifically **while Android Auto is actively projecting navigation**,
+  since no prior on-car run was confirmed to be captured under that condition. This is the cheapest
+  remaining way to find out which cluster profile/mode is actually active on this car, without
+  touching anything protected.
+
+**Direction change, explicitly recorded:** development briefly started toward an independently-
+rendered live map (MapLibre + the phone's own GPS) as a fallback for Display 2, on the reasoning
+that the AA-video-surface path was closed. That assumption was wrong in an important way: **the H7
+head unit itself has no internet connection of its own** - Android Auto navigation on this car only
+works because the Samsung phone supplies live Google Maps data over the wireless AA link. A
+standalone map rendered directly on the head unit (open street-map tiles fetched by the head unit
+itself, etc.) would need internet the head unit doesn't have, so that specific approach was
+abandoned before any dependency was added to the build - **no MapLibre dependency, no new Activity,
+no gradle change was committed for this.** Priority stays on reusing the live AA video/nav data
+that's already working, with a phone-companion relay investigated as a fallback design only (not
+built) in case the video-surface path stays closed.
+
+**Phone-companion architecture - research only, nothing implemented:**
+
+The real constraint is "head unit has no internet of its own," not "the phone has no internet while
+Android Auto is active" - the phone obviously does, since Google Maps is already rendering live on
+the car's screen through the existing wireless AA session. So the actual question is narrower: can
+a *separate* local channel carry data from the phone (which has GPS, internet, and whatever Google
+Maps is doing) to ClusterProbe on the head unit, without disrupting that AA session.
+
+- **Wireless Android Auto's networking model**: a Bluetooth handshake establishes the session, then
+  video/data flows over a dedicated Wi-Fi Direct link between phone and head unit (commonly 5GHz to
+  avoid 2.4GHz contention). Bluetooth stays active throughout (call audio, media controls). Whether
+  the phone's *regular* Wi-Fi (for its own internet, as opposed to mobile data) can stay connected
+  at the same time as the Wi-Fi Direct link to the car is chipset/OEM-dependent and not something
+  this project has verified on your specific Samsung phone - flagging as unconfirmed rather than
+  assuming either way.
+- That uncertainty mostly doesn't matter here, though: **Bluetooth and the cellular modem are
+  separate radios from the Wi-Fi Direct link**, and BT+cellular concurrent with Wi-Fi is routine,
+  non-experimental phone behaviour (this is exactly how a phone call, a smartwatch, and Android
+  Auto itself already coexist). A companion app on the phone relaying data to the head unit over a
+  **classic Bluetooth RFCOMM socket** (a different UUID/profile from whatever AA itself uses, over
+  the same already-paired BT link) is architecturally the safer bet than trying to share the Wi-Fi
+  radio, and needs on-car testing to confirm concurrency in practice, not just in theory.
+- **Google Maps has no public API for a third-party app to read its live route/turn-by-turn state.**
+  This was checked, not assumed. Google's actual Navigation SDK for Android is a separate, paid
+  product for building *your own* turn-by-turn app with Google's routing data - it does not expose
+  what the stock consumer Google Maps app is currently doing. There is no supported way to "tap
+  into" the live Maps session itself.
+- What **does** exist, confirmed by two independent small real-world open-source projects that do
+  exactly this ([GMapsParser](https://github.com/3v1n0/GMapsParser),
+  [gmaps_nav_hud_frame](https://pub-web-s2.flutter-io.cn/packages/gmaps_nav_hud_frame)): Google Maps
+  posts a persistent **navigation notification** during an active route (next turn, distance,
+  street name, a small maneuver arrow icon). A `NotificationListenerService` - a standard, public
+  Android API, one-time user permission grant, no root - can read that notification's content as it
+  updates. This is real precedent, not a guess. Known limits from those same projects: only what the
+  notification actually shows is available (no raw polyline/route geometry, no literal map image);
+  for an *existing* navigation session the notification can take up to ~a minute to first update
+  (a freshly-started session updates immediately); and it depends on Google Maps' own notification
+  layout, which can change between app versions and silently break the parser.
+- The phone's own GPS (`FusedLocationProviderClient`, a standard API) gives live position/speed/
+  bearing directly and is **completely independent of what navigation app is running or whether
+  Maps cooperates at all** - a moving-position layer doesn't need any of the above.
+- Net shape of a companion architecture, if this ever gets built: a small app on the phone reading
+  (a) its own GPS directly and (b) the Maps navigation notification via `NotificationListenerService`,
+  relaying both over a Bluetooth RFCOMM socket to a matching listener added to ClusterProbe on the
+  head unit, which draws them into the existing Newcastle Dash map-window geometry. This gives live
+  position + turn-by-turn *text/icon* state, not the literal rendered Google Maps image - a visually
+  different, ClusterProbe-drawn result, not a mirror of AA's video.
+- Not implemented. Nothing in this project currently requests Bluetooth, location, or notification-
+  access permissions, and no companion-app code exists. This section exists so the design is on
+  record before any code is written, per "don't build a standalone map until we establish how the
+  navigation data will reach the head unit."
+
+**What this version changes in the repo:** three read-only diagnostic additions
+(`NavigationRendererProbe` full-method-list logging, `CaptureHelper`'s resolver check,
+`CarServiceLogSnapshot`'s extra keywords) and this documentation. No new dependency, no new
+Activity, no new permission declared, no existing feature touched or removed.

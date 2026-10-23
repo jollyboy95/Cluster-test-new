@@ -315,6 +315,16 @@ public class MainActivity extends android.app.Activity {
     }
 
     private void testCapture() {
+        // v0.25: read-only resolver check FIRST, before touching startActivityForResult() at all.
+        // An earlier on-car run threw ActivityNotFoundException from that call - this asks
+        // PackageManager directly (queryIntentActivities, never launches anything) whether the
+        // capture-consent screen is genuinely absent on this build system-wide, or something more
+        // specific. See CaptureHelper.checkCaptureIntentResolvable().
+        try {
+            appendLog(CaptureHelper.checkCaptureIntentResolvable(this));
+        } catch (Throwable t) {
+            appendLog("MediaProjection resolver check threw: " + t);
+        }
         appendLog("Requesting MediaProjection capture - accept the system prompt if one appears.");
         String err;
         try {

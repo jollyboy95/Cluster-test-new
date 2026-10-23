@@ -1,6 +1,8 @@
 package com.clusterprobe;
 
 import android.app.Activity;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
@@ -13,6 +15,7 @@ import android.os.Looper;
 import android.util.DisplayMetrics;
 
 import java.nio.ByteBuffer;
+import java.util.List;
 
 /**
  * Experimental: wraps the PUBLIC MediaProjection API to see what it actually hands us on this
@@ -37,6 +40,61 @@ public class CaptureHelper {
     private FrameListener listener;
     private int w, h;
     public volatile Bitmap latestBitmap;
+
+    /**
+     * v0.25: read-only resolver check, run BEFORE actually calling startActivityForResult(). An
+     * on-car run already showed that call throwing ActivityNotFoundException for the capture-
+     * consent screen - this asks PackageManager directly whether ANY activity on this build
+     * resolves that intent at all, via queryIntentActivities(), which never throws and never
+     * launches anything. Confirms (rather than infers from one exception) whether the consent UI
+     * is genuinely absent system-wide on this head unit, or just missing the default/matched
+     * component for some other reason (e.g. disabled rather than uninstalled, which would still
+     * show up here).
+     */
+    public static String checkCaptureIntentResolvable(Activity act) {
+        MediaProjectionManager mpm;
+        try {
+            mpm = (MediaProjectionManager) act.getSystemService(Activity.MEDIA_PROJECTION_SERVICE);
+        } catch (Throwable t) {
+            return "MediaProjection resolver check: getSystemService threw " + t;
+        }
+        if (mpm == null) {
+            return "MediaProjection resolver check: MEDIA_PROJECTION_SERVICE not available on this build.";
+        }
+        android.content.Intent intent;
+        try {
+            intent = mpm.createScreenCaptureIntent();
+        } catch (Throwable t) {
+            return "MediaProjection resolver check: createScreenCaptureIntent() threw " + t;
+        }
+        if (intent == null) {
+            return "MediaProjection resolver check: createScreenCaptureIntent() returned null.";
+        }
+        PackageManager pm = act.getPackageManager();
+        List<ResolveInfo> resolvers;
+        try {
+            resolvers = pm.queryIntentActivities(intent, 0);
+        } catch (Throwable t) {
+            return "MediaProjection resolver check: queryIntentActivities() threw " + t;
+        }
+        if (resolvers == null || resolvers.isEmpty()) {
+            return "MediaProjection resolver check: NO activity on this build resolves the capture-consent "
+                    + "intent (component=" + intent.getComponent() + ", action=" + intent.getAction() + ") - "
+                    + "confirms the ActivityNotFoundException seen earlier is a genuine system-wide absence of "
+                    + "the consent screen, not a one-off fluke. MediaProjection is not usable on this head unit "
+                    + "via the normal app-facing API.";
+        }
+        StringBuilder sb = new StringBuilder("MediaProjection resolver check: " + resolvers.size()
+                + " activity(ies) resolve the capture-consent intent: ");
+        for (ResolveInfo ri : resolvers) {
+            if (ri.activityInfo == null) continue;
+            sb.append(ri.activityInfo.packageName).append('/').append(ri.activityInfo.name).append("  ");
+        }
+        sb.append("- so a resolver DOES exist here; the earlier ActivityNotFoundException needs a fresh look "
+                + "(wrong component targeted by this specific intent instance, disabled-at-runtime component, "
+                + "or similar) rather than treating MediaProjection as flatly unavailable.");
+        return sb.toString();
+    }
 
     /** @return null if the request couldn't even be made (e.g. no MediaProjection service on
      *  this build) - the caller should check and log rather than assume it always starts. */
