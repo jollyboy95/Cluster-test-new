@@ -293,3 +293,37 @@ Maps is doing) to ClusterProbe on the head unit, without disrupting that AA sess
 (`NavigationRendererProbe` full-method-list logging, `CaptureHelper`'s resolver check,
 `CarServiceLogSnapshot`'s extra keywords) and this documentation. No new dependency, no new
 Activity, no new permission declared, no existing feature touched or removed.
+
+## v0.25 on-car result: two more avenues conclusively closed
+
+Both new diagnostics returned results on-car, and both close out the thread they were built for -
+neither is "worth re-checking," both are now settled:
+
+- **`CarAppFocusManager`'s full method list (18 methods)**: `abandonAppFocus` (three overloads),
+  `addFocusListener`, `removeFocusListener`, `isOwningFocus(OnAppFocusOwnershipCallback)`, plus
+  `Object` methods. There is no method anywhere in that list that lets a normal app query "who
+  currently owns navigation focus" after the fact - only ways to request/abandon focus for
+  yourself, register for focus-*changed* callbacks going forward, and check whether your own
+  callback owns it right now. `getAppTypeOwner(int)` isn't missing by name only - this build's
+  manager has no equivalent accessor at all. Closed, not "guessed wrong, try again."
+- **`CaptureHelper.checkCaptureIntentResolvable()`**: "NO activity on this build resolves the
+  capture-consent intent... MediaProjection is not usable on this head unit via the normal
+  app-facing API." The actual capture attempt immediately afterward failed the same way it always
+  has (`ActivityNotFoundException`). Two independent checks now agree: MediaProjection is not a
+  live possibility on this head unit, confirmed by direct `PackageManager` query, not inferred from
+  one exception.
+
+**Updated running tally of every normal-app-reachable avenue probed in this project, now all
+either confirmed closed or confirmed-but-still-untested:**
+
+| Avenue | Status |
+|---|---|
+| `CarInstrumentClusterManager` / `CarNavigationStatusManager` | Denied - signature permissions |
+| Direct `bindService()` to GWM's renderer | Denied - `SecurityException` |
+| `CarAppFocusManager` (query current nav-focus owner) | No such accessor exists on this build |
+| `MediaProjection` (standard Android screen-capture API) | No consent activity exists on this build |
+| `CLUSTER_STATE` broadcast | Registers cleanly; nothing received in any run so far - the one open, untested thread, and it needs a run while AA is actively navigating on-screen to mean anything either way |
+
+Every standard, normal-app-reachable API surface this project has access to has now been tried and
+closed with direct on-car evidence. The phone-companion architecture (researched, not built - see
+above) is the only remaining forward path besides waiting on `CLUSTER_STATE`.
