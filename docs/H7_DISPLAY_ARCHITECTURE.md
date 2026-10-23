@@ -1130,3 +1130,24 @@ CI run and the new block only calls those same, already-proven methods.
 been pressed on the real car yet. This runs alongside, not instead of, this project's own
 from-scratch receiver (AaSessionRunner etc., v0.36) - both are being tried in parallel, per the
 user's explicit choice.
+
+## v0.37 correction: Shizuku.newProcess doesn't exist publicly - fixed via a UserService instead
+
+The first version of v0.37 called `Shizuku.newProcess(cmd, env, dir)` directly from the app
+process. That failed real CI with "newProcess(String[],String[],String) has private access in
+Shizuku" - a genuine build-time fact, not available from this project's local stub-only
+verification (the hand-written Shizuku stub had no way to know a real method was non-public).
+Fixed by adding `IShellService.aidl` + `ShellUserService.java`, the exact same shape as the
+existing `IGwmLogcatService`/`GwmLogcatUserService` pair: a short-lived Shizuku-bound UserService
+running with shell UID in its own process, executing the `am start --display <id>` command with a
+plain `ProcessBuilder` from inside that privileged process, rather than trying to spawn a
+privileged process from the app's own. `ThirdPartyAaLauncher.launchOnDisplay()` now binds this
+service, calls `runOnce(cmd)`, and unbinds/destroys it - one bind-call-unbind cycle per launch
+attempt. CI green on the corrected version.
+
+This is also a reminder for this project's own stub-compile practice: the stub harness catches
+real Java errors (syntax, missing symbols, thread-safety bugs caught by reading the real calling
+code) but it cannot catch a hand-written stub being wrong about a real library's actual public
+API surface - that only CI, building against the real dependency, can catch. Worth treating a
+first CI run on any new Shizuku/AIDL-adjacent code as still "unverified" even after a clean local
+stub-compile.
