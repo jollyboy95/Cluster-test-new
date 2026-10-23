@@ -30,10 +30,11 @@ import java.net.Socket;
  * ("Desktop Head Unit" - Google's own official port for exactly this kind of manual-IP wireless
  * connection), cross-confirming this isn't a guess.
  *
- * Once connected, this hands off to exactly the same AA Messenger protocol AaProtocol already
- * implements for USB - not yet wired up here either (same deferred step as
- * AaWirelessBootstrapServer), kept deliberately simple for this increment: confirm the plain TCP
- * connection itself works first.
+ * v0.36: once connected, this now hands the live Socket straight to AndroidAutoSessionActivity
+ * (static pendingSocket handoff - see that class's doc comment for why not a Parcelable extra),
+ * which runs the real AaSessionRunner protocol pipeline and renders whatever video comes back.
+ * The "close test connection" behavior described above is gone on the success path - a working
+ * TCP connect now leads straight into the real session instead of stopping there.
  */
 public final class AaWirelessManualConnect {
 
@@ -46,7 +47,7 @@ public final class AaWirelessManualConnect {
     public static void connect(Context context, String ip, int port, AndroidAutoReceiver.StatusListener status) {
         stop();
         instance = new AaWirelessManualConnect();
-        Thread t = new Thread(() -> instance.doConnect(ip, port, status), "aa-wireless-manual-connect");
+        Thread t = new Thread(() -> instance.doConnect(context, ip, port, status), "aa-wireless-manual-connect");
         t.setDaemon(true);
         t.start();
     }
@@ -72,7 +73,7 @@ public final class AaWirelessManualConnect {
         }
     }
 
-    private void doConnect(String ip, int port, AndroidAutoReceiver.StatusListener status) {
+    private void doConnect(Context context, String ip, int port, AndroidAutoReceiver.StatusListener status) {
         log(status, "--- Wireless AA manual connect (experimental - OpenAuto-style, phone as TCP server) ---");
         if (!AndroidAutoReceiver.enabled) {
             log(status, "Wireless manual connect: master toggle is OFF - enable the AA receiver "
@@ -90,10 +91,15 @@ public final class AaWirelessManualConnect {
             socket = new Socket();
             socket.connect(new InetSocketAddress(ip.trim(), port), 8000);
             log(status, "Connected: " + socket.getRemoteSocketAddress() + " - plain TCP session open. "
-                    + "(Not yet wired into the VersionRequest/VersionResponse exchange - that's the "
-                    + "next increment, same as the Bluetooth bootstrap path; closing this test "
-                    + "connection now.)");
+                    + "Handing off to the real session pipeline (version exchange, TLS, video channel "
+                    + "setup) and opening the session screen now.");
             setStage(status, AndroidAutoReceiver.StageStatus.TESTED_WORKING);
+
+            AndroidAutoSessionActivity.pendingSocket = socket;
+            socket = null; // ownership passed to the Activity - don't close it in finally below
+            android.content.Intent intent = new android.content.Intent(context, AndroidAutoSessionActivity.class);
+            intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(intent);
         } catch (IOException e) {
             log(status, "Connection failed: " + e);
             setStage(status, AndroidAutoReceiver.StageStatus.TESTED_FAILING);

@@ -855,3 +855,92 @@ now exist side by side for tomorrow's test session: Bluetooth+hotspot bootstrap 
 blocked by the same `ERROR_INCOMPATIBLE_MODE` issue), manual-IP Headunit Server connect (v0.34,
 best bet to work first time), and this Wi-Fi Direct feasibility probe (v0.35, cheap to test,
 answers whether a fuller Native Mode implementation is worth building next).
+
+## v0.36: the real AA protocol pipeline - version/TLS/discovery/video-channel setup, through to a visible decode surface
+
+Per the explicit instruction to stop shipping disconnected probes and "build the view into it" -
+this increment builds the actual Android Auto session protocol, transport-agnostic (same code path
+for USB or any wireless transport, same split aasdk itself uses between its USBTransport and
+TCPTransport), through to real decoded H.264 frames rendered on screen. It does NOT yet include
+any on-car test - see Status below.
+
+**Correcting message directionality.** Re-read aasdk's actual `ControlServiceChannel.cpp` and
+`SSLWrapper.cpp`/`Cryptor.cpp` source directly (not re-derived from memory) before writing any new
+protocol code, because an earlier pass through this project had assumed the wrong sender/receiver
+roles for some control messages. Confirmed from source: as the head unit, THIS side sends
+`VersionRequest`, `Handshake`, `AuthCompleteIndication` (sent **unencrypted** - before the TLS
+session is used for anything else), `ServiceDiscoveryResponse` (encrypted), and
+`ChannelOpenResponse`/`AVChannelSetupResponse` (encrypted, per-channel) - and receives
+`VersionResponse`, `ServiceDiscoveryRequest`, `ChannelOpenRequest`, `AVChannelSetupRequest`. Also
+confirmed: the head unit is the **TLS client** (`SSL_set_connect_state()`), presents a fixed,
+publicly-known client certificate/key (same one every open-source AA head unit implementation
+uses - not something ClusterProbe invented), and does **not** validate the phone's server
+certificate at all (`SSL_VERIFY_NONE`).
+
+**New files:**
+- `MiniProto.java` - a minimal hand-rolled protobuf wire-format reader/writer (varint and
+  length-delimited fields, nested messages) used instead of Gradle-generated protobuf-java
+  classes, for the same reason `AaWirelessConstants` hand-rolled the v0.32 bootstrap messages:
+  there's no protoc/real Android SDK available for local pre-push verification in this project's
+  tooling, so generated classes can't be sanity-checked before a push.
+- `AaControlMessages.java` - builds/parses `AuthCompleteIndication`, `ServiceDiscoveryRequest`,
+  `ServiceDiscoveryResponse` (advertising exactly one video channel - 480p@30fps, dpi=140 - with
+  `head_unit_name="ClusterProbe"`, `car_model="Haval H7 Vanta Hybrid"`), `ChannelOpenRequest`/
+  `ChannelOpenResponse`, and `AVChannelSetupRequest`/`AVChannelSetupResponse` - field layouts taken
+  directly from the real vendored `.proto` files already in this repo
+  (`app/src/main/proto/*.proto`, sourced from aasdk per the existing `NOTICE.md`).
+- `AaTlsSession.java` - a real `SSLEngine`-based TLS client handshake using the vendored fixed
+  cert/key. The PKCS1-to-PKCS8 private-key conversion and the full
+  cert-parse -> key-parse -> KeyStore -> KeyManagerFactory -> SSLContext -> SSLEngine pipeline was
+  written and verified standalone against the real JDK `javax.net.ssl`/`java.security` stack
+  (identical APIs to Android) BEFORE being transcribed into this file - that standalone test caught
+  and fixed a `BUFFER_OVERFLOW` bug (a flat 16KB output buffer was too small for a real TLS record;
+  fixed by sizing via `SSLSession.getPacketBufferSize()`) that would otherwise have shipped
+  untested.
+- `AaSessionRunner.java` - orchestrates the whole exchange over a connected `Socket`: VersionRequest
+  -> VersionResponse -> TLS handshake -> AuthCompleteIndication -> ServiceDiscoveryRequest ->
+  ServiceDiscoveryResponse -> a receive loop that answers `ChannelOpenRequest`/
+  `AVChannelSetupRequest` on the video channel and extracts raw H.264 bytes from
+  `AV_MEDIA_(WITH_TIMESTAMP_)INDICATION` frames (stripping the 8-byte timestamp prefix when
+  present), handing them to a listener. Deliberately UI-free so it's testable independent of any
+  Activity.
+- `AndroidAutoSessionActivity.java` - the actual visible window this instruction asked for: a
+  `SurfaceView` + status `TextView`, running `AaSessionRunner` on a background thread and decoding
+  whatever H.264 bytes arrive with a real `android.media.MediaCodec` (`video/avc`, default
+  800x480 "480p"-class format matching what's advertised in ServiceDiscoveryResponse), rendering
+  straight to the Surface via `releaseOutputBuffer(index, true)`. Runs on the default display for
+  now, deliberately - per the user's own stated roadmap ("connect first and see Android Auto, THEN
+  project to Display 2, THEN build the dash cluster on top"), routing this to Display 2 is the next
+  phase, not this one.
+
+**Modified:**
+- `AaProtocol.java` - generalized its USB-only frame I/O with Socket-based `writeFrame`/`readFrame`
+  (`SocketMessage` carries channelId/messageId/body/encrypted), so the same framing works over any
+  transport. USB-specific methods untouched.
+- `AaWirelessManualConnect.java` - the v0.34 manual-IP ("Headunit Server") path no longer closes its
+  TCP connection as a test; a successful connect now hands the live `Socket` straight to
+  `AndroidAutoSessionActivity` (via a static `pendingSocket` field, since a connected `Socket` can't
+  go in an `Intent` extra) and launches it. This is the transport most likely to work first per the
+  user's own next test, so it's the one wired all the way through in this increment; the Bluetooth
+  bootstrap (v0.32) and Wi-Fi Direct probe (v0.35) paths are not yet wired to this session code.
+- `AndroidManifest.xml` - registered `AndroidAutoSessionActivity` (exported=false, fullscreen
+  black theme, resizeable).
+
+**Verification done before pushing:** full stub-compile pass (via this project's established
+`/tmp`-based plain-javac harness, extended with `MediaCodec`/`MediaFormat`/`SurfaceView`/
+`SurfaceHolder`/`FrameLayout`/`TextView`/`Color`/`Log` stand-ins) across every new and modified
+file in this increment. This caught two real bugs before they reached CI or the car: (1) a stray
+`*/` inside a Javadoc comment in `AaControlMessages.java` that would have prematurely closed the
+comment block and failed compilation outright; (2) a missing `context` parameter threaded through
+`AaWirelessManualConnect.doConnect()`, needed for the new `startActivity()` call, that the compiler
+caught as an unresolved symbol. Both fixed; the harness reports a clean exit after the fixes.
+
+**Status: NOT yet tested on real hardware, and not yet CI-verified at the time this section was
+written (CI run is the next step after this commit).** This is protocol-layer code following the
+same evidence-based practice as every other increment in this project - real message IDs, real
+field layouts, a real verified TLS pipeline - but "compiles clean against stubs" is not the same
+claim as "a phone has connected and a frame has rendered." No Android Auto video has been displayed
+by this app yet. The next real test is the user connecting a phone via the v0.34 manual-IP path
+(enabling "Start head unit server" in the phone's Android Auto developer settings) and watching
+whether `AndroidAutoSessionActivity` actually opens and reaches "FIRST VIDEO FRAME DECODED" - that
+status string is the actual bar for "Android Auto is visible," not CI passing.

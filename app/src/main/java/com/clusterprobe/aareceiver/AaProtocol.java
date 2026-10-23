@@ -4,6 +4,9 @@ import android.hardware.usb.UsbDeviceConnection;
 import android.hardware.usb.UsbEndpoint;
 import android.hardware.usb.UsbRequest;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
 
 /**
@@ -299,5 +302,96 @@ public final class AaProtocol {
         int minor = body.length >= 4 ? (((body[2] & 0xFF) << 8) | (body[3] & 0xFF)) : 0;
         int status = body.length >= 6 ? (((body[4] & 0xFF) << 8) | (body[5] & 0xFF)) : 0xFFFF;
         return new VersionResponse(major, minor, status);
+    }
+
+    // ---- v0.36: generalized Socket-based framing, added once a wireless connection (manual IP,
+    // Wi-Fi Direct, or the Bluetooth bootstrap's resulting TCP session) needed the same frame
+    // format AaProtocol already implements for USB. Same wire format exactly - see this class's
+    // top-level doc comment - just over a plain InputStream/OutputStream instead of
+    // UsbDeviceConnection/UsbEndpoint, since that's all a Socket gives you and a real TCP
+    // connection doesn't have USB's 0-byte-completion quirk that motivated the retry/UsbRequest
+    // machinery above. The USB-specific methods above are untouched (already confirmed on real
+    // hardware up through VersionRequest) - this is purely additive. ----
+
+    /** Like writeMessage(UsbDeviceConnection, ...) but over a plain OutputStream. */
+    public static void writeFrame(OutputStream out, int channelId, int messageId, byte[] body,
+                                   boolean encrypted) throws IOException {
+        byte[] payload = new byte[2 + body.length];
+        payload[0] = (byte) ((messageId >> 8) & 0xFF);
+        payload[1] = (byte) (messageId & 0xFF);
+        System.arraycopy(body, 0, payload, 2, body.length);
+        if (payload.length > 0xFFFF) {
+            throw new IOException("payload (" + payload.length + " bytes) exceeds what SHORT "
+                    + "framing can describe (0xFFFF) - EXTENDED/multi-frame framing isn't "
+                    + "implemented here.");
+        }
+        byte[] frame = new byte[4 + payload.length];
+        frame[0] = (byte) channelId;
+        frame[1] = (byte) (FRAME_TYPE_BULK | (encrypted ? ENCRYPTION_ENCRYPTED : ENCRYPTION_PLAIN) | MESSAGE_TYPE_SPECIFIC);
+        frame[2] = (byte) ((payload.length >> 8) & 0xFF);
+        frame[3] = (byte) (payload.length & 0xFF);
+        System.arraycopy(payload, 0, frame, 4, payload.length);
+        out.write(frame);
+        out.flush();
+    }
+
+    /** Writes a RAW frame (no 2-byte message-ID prefix inserted) - used only for SSL_HANDSHAKE
+     *  frames, whose payload IS the raw TLS handshake bytes, not an [messageId][body] envelope
+     *  (confirmed from ControlServiceChannel::sendHandshake: it inserts MessageId(SSL_HANDSHAKE)
+     *  as the payload prefix itself via insertPayload, same as every other message - so actually
+     *  SSL_HANDSHAKE DOES use the normal [messageId][body] envelope too, with the handshake bytes
+     *  as the body - writeMessage/writeFrame above already handle that correctly. This method
+     *  exists only as a documented alias so AaTlsSession's call sites read clearly; it delegates
+     *  to writeFrame. */
+    public static void writeHandshakeFrame(OutputStream out, byte[] handshakeBytes) throws IOException {
+        writeFrame(out, CHANNEL_CONTROL, MESSAGE_ID_SSL_HANDSHAKE, handshakeBytes, false);
+    }
+
+    public static final class SocketMessage {
+        public final int channelId;
+        public final int messageId;
+        public final byte[] body;
+        public final boolean encrypted;
+        SocketMessage(int channelId, int messageId, byte[] body, boolean encrypted) {
+            this.channelId = channelId; this.messageId = messageId; this.body = body; this.encrypted = encrypted;
+        }
+    }
+
+    /** Like readMessage(UsbDeviceConnection, ...) but over a plain InputStream - blocks until a
+     *  full frame has arrived (InputStream doesn't have USB's 0-byte-completion quirk, so a plain
+     *  readExactly loop is correct and sufficient here, same reasoning as
+     *  AaWirelessConstants.readFrame). EXTENDED/multi-frame framing still isn't implemented - a
+     *  MIDDLE/FIRST/LAST frame throws rather than being silently mishandled. */
+    public static SocketMessage readFrame(InputStream in) throws IOException {
+        byte[] header = readExactlyStream(in, 4);
+        int channelId = header[0] & 0xFF;
+        int flags = header[1] & 0xFF;
+        int frameType = flags & FRAME_TYPE_BULK;
+        boolean encrypted = (flags & ENCRYPTION_ENCRYPTED) != 0;
+        int shortSize = ((header[2] & 0xFF) << 8) | (header[3] & 0xFF);
+        if (frameType != FRAME_TYPE_BULK) {
+            throw new IOException("received a " + frameTypeName(frameType) + " frame (channel="
+                    + channelId + ") - multi-frame reassembly isn't implemented here.");
+        }
+        if (shortSize < 2) {
+            throw new IOException("frame declares a " + shortSize + "-byte payload - too small to "
+                    + "hold a 2-byte message ID.");
+        }
+        byte[] payload = readExactlyStream(in, shortSize);
+        int messageId = ((payload[0] & 0xFF) << 8) | (payload[1] & 0xFF);
+        byte[] body = new byte[shortSize - 2];
+        System.arraycopy(payload, 2, body, 0, body.length);
+        return new SocketMessage(channelId, messageId, body, encrypted);
+    }
+
+    private static byte[] readExactlyStream(InputStream in, int count) throws IOException {
+        byte[] buf = new byte[count];
+        int off = 0;
+        while (off < count) {
+            int n = in.read(buf, off, count - off);
+            if (n < 0) throw new IOException("stream closed after " + off + "/" + count + " bytes");
+            off += n;
+        }
+        return buf;
     }
 }
