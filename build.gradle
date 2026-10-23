@@ -1,3 +1,7 @@
 plugins {
     id 'com.android.application' version '7.4.2' apply false
+    // v0.26: compiles the real, vendored aasdk_proto/*.proto Android Auto protocol message
+    // definitions (app/src/main/proto/aasdk/) into Java classes - see
+    // docs/H7_DISPLAY_ARCHITECTURE.md's Android Auto receiver section.
+    id 'com.google.protobuf' version '0.9.4' apply false
 }

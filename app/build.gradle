@@ -1,4 +1,8 @@
-plugins { id 'com.android.application' }
+plugins {
+    id 'com.android.application'
+    // v0.26: see root build.gradle's comment and docs/H7_DISPLAY_ARCHITECTURE.md.
+    id 'com.google.protobuf'
+}
 
 android {
     namespace 'com.clusterprobe'
@@ -7,12 +11,33 @@ android {
         applicationId "com.clusterprobe"
         minSdk 28
         targetSdk 28
-        versionCode 25
-        versionName "0.25"
+        versionCode 26
+        versionName "0.26"
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
+    }
+    // app/src/main/proto/aasdk/*.proto is the DEFAULT source set location the protobuf Gradle
+    // plugin already scans - no explicit sourceSets block needed. Those .proto files are vendored
+    // verbatim, unmodified, from https://github.com/f1xpl/aasdk (commit 046b3b381595509d0939fa84
+    // b14a90978f46ff63), GPLv3, Copyright (c) 2018 f1x.studio (Michal Szwaj) - real Android Auto
+    // protocol message definitions, used here only as a protocol SPEC (compiled to Java message
+    // classes); none of aasdk's own C++ implementation is used or linked. See
+    // docs/H7_DISPLAY_ARCHITECTURE.md for why (libusb/Boost/OpenSSL don't drop into a sandboxed
+    // Android app, and this project has no way to build or test native/NDK code at all).
+}
+
+protobuf {
+    protoc {
+        artifact = 'com.google.protobuf:protoc:3.21.12'
+    }
+    generateProtoTasks {
+        all().each { task ->
+            task.builtins {
+                java {}
+            }
+        }
     }
 }
 
@@ -22,4 +47,8 @@ dependencies {
     // touch the signature-protected car.ipk_setting.* interface. See GwmLogcatVehicleDataSource.
     implementation 'dev.rikka.shizuku:api:13.1.5'
     implementation 'dev.rikka.shizuku:provider:13.1.5'
+
+    // v0.26: runtime for the generated Java classes from app/src/main/proto/aasdk/*.proto -
+    // version must track the protoc artifact above.
+    implementation 'com.google.protobuf:protobuf-java:3.21.12'
 }

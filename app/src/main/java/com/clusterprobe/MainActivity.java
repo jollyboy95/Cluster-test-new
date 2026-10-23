@@ -143,6 +143,45 @@ public class MainActivity extends android.app.Activity {
             appendLog("Cluster-renderer probe stopped, any bind torn down, cluster-state broadcast listener unregistered.");
         });
 
+        addSection(root, "Android Auto receiver (experimental, OFF by default - see docs)");
+        addLabel(root, "Builds ClusterProbe's own Android Auto receiver, independent of GWM's "
+                + "factory one. USB/AOAP negotiation only, as far as ConnectionStage.AOAP_START_"
+                + "ACCESSORY - nothing past that is implemented yet. Does nothing at all unless "
+                + "the toggle below is ON and the button is pressed while a phone is plugged in.");
+        Button aaReceiverToggle = addButton(root, "AA receiver master toggle: OFF", null);
+        aaReceiverToggle.setOnClickListener(v -> {
+            com.clusterprobe.aareceiver.AndroidAutoReceiver.enabled =
+                    !com.clusterprobe.aareceiver.AndroidAutoReceiver.enabled;
+            boolean on = com.clusterprobe.aareceiver.AndroidAutoReceiver.enabled;
+            aaReceiverToggle.setText("AA receiver master toggle: " + (on ? "ON" : "OFF"));
+            appendLog("AA receiver master toggle: " + (on ? "ON - the negotiation button will now "
+                    + "actually do something." : "OFF (default) - the negotiation button will log "
+                    + "that it's disabled and do nothing else."));
+        });
+        addButton(root, "Run USB AOAP negotiation (experimental)", () -> {
+            appendLog("Running AndroidAutoReceiver USB/AOAP negotiation...");
+            com.clusterprobe.aareceiver.AndroidAutoReceiver.run(getApplicationContext(),
+                    new com.clusterprobe.aareceiver.AndroidAutoReceiver.StatusListener() {
+                        @Override public void onStatus(String msg) { appendLog(msg); }
+                        @Override public void onStageUpdate(com.clusterprobe.aareceiver.ConnectionStage stage,
+                                com.clusterprobe.aareceiver.AndroidAutoReceiver.StageStatus status) {
+                            appendLog("  stage: " + stage + " -> " + status);
+                        }
+                    });
+        });
+        addButton(root, "Show all connection-stage statuses", () -> {
+            appendLog("--- Android Auto receiver: connection stage statuses ---");
+            for (com.clusterprobe.aareceiver.ConnectionStage s : com.clusterprobe.aareceiver.ConnectionStage.values()) {
+                com.clusterprobe.aareceiver.AndroidAutoReceiver.StageStatus st =
+                        com.clusterprobe.aareceiver.AndroidAutoReceiver.getStageStatuses().get(s);
+                appendLog(s + " [" + st + "]: " + s.description);
+            }
+        });
+        addButton(root, "Stop AA receiver negotiation", () -> {
+            com.clusterprobe.aareceiver.AndroidAutoReceiver.stop();
+            appendLog("AA receiver negotiation stopped (if it was running).");
+        });
+
         addSection(root, "Experimental: capture display content");
         addButton(root, "Test map capture (MediaProjection)", this::testCapture);
         Button toggleCapture = addButton(root, "Use captured frame in cluster: OFF", null);

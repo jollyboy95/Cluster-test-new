@@ -28,6 +28,16 @@
          from this device's own PackageManager. Read-only data permission; unrelated to the
          signature-protected car.ipk_setting.* write interface this project stays away from. -->
     <uses-permission android:name="com.gwm.android.adapter.permission.GET_DATA" />
+
+    <!-- v0.26: Android Auto receiver (experimental, disabled by default - see
+         com.clusterprobe.aareceiver.AndroidAutoReceiver and docs/H7_DISPLAY_ARCHITECTURE.md).
+         USB host capability is needed to negotiate AOAP with an attached phone. required="false"
+         so this manifest declaration can never block install on a build without it - this head
+         unit's existing wired-AA-to-GWM's-receiver behavior already implies it has USB host, but
+         this doesn't assume that. No <uses-permission> needed for USB device access itself - that
+         permission is granted per-device at runtime via UsbManager.requestPermission(), the same
+         flow this feature uses. -->
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
     <application
         android:label="ClusterProbe"
         android:allowBackup="false"

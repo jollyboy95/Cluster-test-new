@@ -327,3 +327,95 @@ either confirmed closed or confirmed-but-still-untested:**
 Every standard, normal-app-reachable API surface this project has access to has now been tried and
 closed with direct on-car evidence. The phone-companion architecture (researched, not built - see
 above) is the only remaining forward path besides waiting on `CLUSTER_STATE`.
+
+## v0.26: Android Auto receiver - ClusterProbe becomes its own AA receiver (new direction)
+
+Given every normal-app path into GWM's existing Android Auto session is now confirmed closed (see
+the table above), the project's direction changed: instead of trying to reach *into* GWM's
+receiver, ClusterProbe starts building its **own**, independent Android Auto receiver - the
+phone connects to ClusterProbe directly (over USB initially, wireless later), same as it connects
+to GWM's factory receiver today, just a second option. This does not touch, bypass, or interfere
+with GWM's receiver or car.ipk_setting.* in any way - it is a parallel connection to the phone,
+the same category of thing hobbyist "DIY Android Auto head unit" projects
+(OpenAuto/aasdk/Head Unit Revived) already do on other hardware. The user independently confirmed
+**Head Unit Revived already works on this exact NOBO head unit** - both wired and wireless - which
+is real, concrete validation this is achievable on this hardware before any of this project's own
+code was written.
+
+**The one unavoidable trade-off, also user-confirmed from that same test:** a phone holds one
+active Android Auto session at a time. Using ClusterProbe's receiver means the phone connects to
+*it* instead of GWM's factory receiver - getting GWM's own AA back required not opening the
+third-party app and restarting the head unit. This is a swap, not a tap. Building our own receiver
+doesn't change that trade-off; it only changes what the cluster gets to show while connected to it,
+and lets us draw our own instruments around the video instead of being stuck with someone else's UI.
+
+**Why not just reuse aasdk's C++ directly:** aasdk (https://github.com/f1xpl/aasdk, GPLv3, commit
+`046b3b381595509d0939fa84b14a90978f46ff63`) is a real, comprehensive implementation of the AA
+protocol, but it's written for desktop/embedded Linux - it depends on Boost, OpenSSL, and
+**libusb-1.0 with direct kernel USB device access**, which a normal (non-rooted) Android app
+cannot have; Android apps get USB access through `UsbManager`, which hands over an
+already-permission-granted file descriptor instead. Making aasdk's C++ work inside a sandboxed
+Android app would mean cross-compiling Boost/libusb/OpenSSL for Android via NDK *and* patching
+aasdk's USB layer to accept an Android-supplied fd instead of opening the device itself - real,
+precedented, but substantial toolchain work, and this project has no way to build or test any
+native/NDK code at all in the sandbox it's developed in (no compiler, no device, nothing to verify
+against). Writing unverified C++/JNI and presenting it as working would be exactly the kind of
+"looks finished, isn't" result this project avoids.
+
+**What's actually used from aasdk:** only `aasdk_proto/*.proto` - the real, complete Android Auto
+protocol message definitions (auth, AV/video channel, bluetooth, sensor, control, input, etc.) -
+vendored verbatim and unmodified into `app/src/main/proto/aasdk/`, compiled to Java message
+classes by the Gradle protobuf plugin. None of aasdk's C++ implementation is used, linked, or
+reimplemented from its source; the actual receiver logic here is original Java/Kotlin written
+directly against Android's own public `UsbManager`/`UsbDeviceConnection` API and the public,
+Google-documented AOAP handshake spec. **Licensing note:** the vendored `.proto` files are GPLv3 -
+if this project is ever published/distributed rather than kept as a personal build, that license's
+terms would apply to anything incorporating them; worth a deliberate look before any public release.
+
+**A second real app was analyzed for grounding, read-only, the same way the factory AndroidAuto.apk
+was analyzed in v0.24: DiPlay (the APK the user already has, for a BYD build).** Findings:
+`liblocal_hotspot_radio.so` confirms the wireless bootstrap really does involve the receiver
+hosting its own Wi-Fi hotspot (matches "my Samsung connects to the Haval's hotspot") - replicable
+with Android's own standard `WifiManager` local-hotspot APIs, no special hardware implied. But
+`libxcertplay_i2c.so` plus direct manifest references to `com.byd.amapservice`/`com.byd.service`/
+`com.ts.car.someip.service` and an `AdbClusterActivity` component strongly suggest DiPlay's
+specific *cluster-display* feature on BYD depends on BYD hardware (an I2C-addressable companion
+chip) and privileged platform hooks - not a pure-software trick portable to this NOBO head unit.
+This doesn't block anything here, though: ClusterProbe already has its own working path onto
+Display 2 (`ClusterActivity`, proven since v0.20) - the receiver only needs to hand over a decoded
+frame, not replicate BYD's specific injection mechanism.
+
+**What this version actually implements (and what it explicitly does not):**
+
+New, isolated package `com.clusterprobe.aareceiver`, wired into MainActivity as a clearly-labelled
+"Android Auto receiver (experimental, OFF by default)" section with its own master toggle
+(`AndroidAutoReceiver.enabled`, defaults to `false`) - the negotiation button does nothing at all
+unless that toggle is explicitly turned on first, and even then only runs when pressed, with no
+manifest-registered `USB_DEVICE_ATTACHED` receiver and no background listening, so nothing here
+can interfere with the factory receiver or an existing phone pairing unless the user deliberately
+triggers it with a phone physically plugged in for this specific test.
+
+`ConnectionStage` enumerates every real step from "no phone attached" to "a decoded video frame is
+drawable", each tracked with an honest status (`NOT_IMPLEMENTED` / `IMPLEMENTED_UNTESTED` /
+`RUNNING` / `TESTED_WORKING` / `TESTED_FAILING`) - visible via the new "Show all connection-stage
+statuses" button. As of this version:
+
+- **Implemented, not yet tested on a real phone:** USB device enumeration, USB permission request
+  (`UsbManager.requestPermission` + the standard broadcast-receiver wait), and the three AOAP
+  control transfers in order - `GetProtocol` (0x33), `SendString` x6 (0x34, identifying this app as
+  manufacturer "Android" / model "Android Auto", matching AOAP's own public spec convention), and
+  `StartAccessory` (0x35). All implemented directly against Android's public USB host API - no
+  native code.
+- **Explicitly NOT implemented yet:** detecting and opening the phone once it re-enumerates as a
+  USB accessory after `StartAccessory` (`ConnectionStage.ACCESSORY_REOPEN`); the SSL/TLS handshake
+  over that accessory stream; auth; service discovery; opening the video channel; decoding a single
+  frame; and the entire wireless bootstrap path (Bluetooth AA-Wireless service discovery + Wi-Fi
+  credential exchange + hosting a local hotspot) - aasdk itself doesn't implement this last part
+  either, it's outside that library's scope entirely, and remains the single hardest, least-
+  precedented unknown in this whole direction.
+
+**Per the project's own rule, repeated here deliberately: this is not a working Android Auto
+receiver.** Nothing beyond `StartAccessory` has been attempted, let alone demonstrated, and even
+the implemented steps are untested against a real phone as of this commit. The next on-car step is
+simply: plug the phone in via USB, enable the toggle, press the negotiation button, and see how far
+the real hardware actually gets - that result determines what gets built next, not an assumption.
