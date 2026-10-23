@@ -1,0 +1,38 @@
+// Vendored (field layout only - see AaWirelessStartRequest.proto's header for sourcing details)
+// from aa-proxy-rs's src/protos/WifiInfoResponse.proto, commit 5a6887d427f4b6f6395bf1d3d7d4d31f805e4f98,
+// GPLv2. This is the real message the head unit sends to the phone, over the same bootstrap
+// RFCOMM channel, carrying the credentials of the Wi-Fi AP the head unit is hosting so the phone
+// can join it before opening the TCP session named by AaWirelessStartRequest.
+//
+// Renamed from upstream "WifiInfoResponse.proto"/"WifiInfoResponse" to avoid ambiguity with
+// Android's own Wi-Fi classes - wire format and field numbers unchanged from upstream.
+syntax = "proto2";
+option optimize_for = LITE_RUNTIME;
+option java_package = "com.clusterprobe.aareceiver.proto";
+option java_outer_classname = "AaWirelessInfoResponseProto";
+
+enum AaWirelessAccessPointType {
+    AA_WIRELESS_AP_STATIC = 0;
+    AA_WIRELESS_AP_DYNAMIC = 1;
+}
+
+enum AaWirelessSecurityMode {
+    AA_WIRELESS_SECURITY_UNKNOWN = 0;
+    AA_WIRELESS_SECURITY_OPEN = 1;
+    AA_WIRELESS_SECURITY_WEP_64 = 2;
+    AA_WIRELESS_SECURITY_WEP_128 = 3;
+    AA_WIRELESS_SECURITY_WPA_PERSONAL = 4;
+    AA_WIRELESS_SECURITY_WPA2_PERSONAL = 8;
+    AA_WIRELESS_SECURITY_WPA_WPA2_PERSONAL = 12;
+    AA_WIRELESS_SECURITY_WPA_ENTERPRISE = 20;
+    AA_WIRELESS_SECURITY_WPA2_ENTERPRISE = 24;
+    AA_WIRELESS_SECURITY_WPA_WPA2_ENTERPRISE = 28;
+}
+
+message AaWirelessInfoResponse {
+    required string ssid = 1;
+    required string key = 2;
+    required string bssid = 3;
+    required AaWirelessSecurityMode security_mode = 4;
+    required AaWirelessAccessPointType access_point_type = 5;
+}

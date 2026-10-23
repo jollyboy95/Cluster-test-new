@@ -38,6 +38,24 @@
          permission is granted per-device at runtime via UsbManager.requestPermission(), the same
          flow this feature uses. -->
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+
+    <!-- v0.32: wireless AA bootstrap (experimental, disabled by default - same master toggle as
+         the USB receiver above; see com.clusterprobe.aareceiver.AaWirelessBootstrapServer and
+         docs/H7_DISPLAY_ARCHITECTURE.md's "v0.32: wireless bootstrap" section). targetSdk 28, so
+         the legacy BLUETOOTH/BLUETOOTH_ADMIN permissions (not the API 31+ BLUETOOTH_CONNECT/
+         BLUETOOTH_ADVERTISE/BLUETOOTH_SCAN split) are what this device actually enforces - these
+         are install-time-granted on API 28, no runtime request needed for them specifically.
+         ACCESS_FINE_LOCATION IS a runtime permission on API 28 and is required by
+         WifiManager.startLocalOnlyHotspot() - requested at runtime by the diagnostic screen before
+         this feature's button does anything, never assumed granted. Does not touch Bluetooth
+         discovery/pairing - the phone must already be paired with this head unit the normal way;
+         this only advertises one RFCOMM service (AaWirelessConstants.AAWG_PROFILE_UUID) and hosts
+         a local Wi-Fi AP, both ordinary non-privileged app capabilities. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <application
         android:label="ClusterProbe"
         android:allowBackup="false"

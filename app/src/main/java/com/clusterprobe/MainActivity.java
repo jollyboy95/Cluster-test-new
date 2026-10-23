@@ -31,6 +31,7 @@ public class MainActivity extends android.app.Activity {
 
     private static final int REQ_CAPTURE = 4201;
     private static final int REQ_GWM_GET_DATA = 4202;
+    private static final int REQ_WIRELESS_LOCATION = 4203;
     private static final String GWM_GET_DATA_PERMISSION = "com.gwm.android.adapter.permission.GET_DATA";
     private static final int CLUSTER_DISPLAY_ID = 2;
     private static final int HUD_DISPLAY_ID = 3; // per earlier "List displays" findings - verify on your unit
@@ -197,6 +198,44 @@ public class MainActivity extends android.app.Activity {
             appendLog("AA receiver negotiation stopped (if it was running).");
         });
 
+        addSection(root, "Wireless AA bootstrap (experimental, same OFF-by-default toggle above)");
+        addLabel(root, "Separate transport for the same receiver: hosts our own Wi-Fi AP, "
+                + "advertises the real Android-Auto-Wireless Bluetooth RFCOMM service "
+                + "(4de17a00-52cb-11e6-bdf4-0800200c9a66), and runs the WifiStartRequest/"
+                + "WifiInfoResponse credential exchange - reimplemented from aa-proxy-rs's actual "
+                + "working head-unit code, see docs. Stops once the phone's TCP session connection "
+                + "is confirmed - not yet wired into the VersionRequest exchange. Phone must "
+                + "already be Bluetooth-paired with this head unit the normal way first. Needs the "
+                + "AA receiver master toggle above ON, plus location permission (required by "
+                + "Android for hosting a local hotspot).");
+        addButton(root, "Run wireless AA bootstrap (experimental)", () -> {
+            if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)
+                    != PackageManager.PERMISSION_GRANTED) {
+                appendLog("ACCESS_FINE_LOCATION not granted yet - requesting it (required for "
+                        + "WifiManager.startLocalOnlyHotspot()). Press the button again once granted.");
+                try {
+                    requestPermissions(new String[]{android.Manifest.permission.ACCESS_FINE_LOCATION},
+                            REQ_WIRELESS_LOCATION);
+                } catch (Throwable t) {
+                    appendLog("requestPermissions() threw: " + t);
+                }
+                return;
+            }
+            appendLog("Running wireless AA bootstrap...");
+            com.clusterprobe.aareceiver.AaWirelessBootstrapServer.run(getApplicationContext(),
+                    new com.clusterprobe.aareceiver.AndroidAutoReceiver.StatusListener() {
+                        @Override public void onStatus(String msg) { appendLog(msg); }
+                        @Override public void onStageUpdate(com.clusterprobe.aareceiver.ConnectionStage stage,
+                                com.clusterprobe.aareceiver.AndroidAutoReceiver.StageStatus status) {
+                            appendLog("  stage: " + stage + " -> " + status);
+                        }
+                    });
+        });
+        addButton(root, "Stop wireless AA bootstrap", () -> {
+            com.clusterprobe.aareceiver.AaWirelessBootstrapServer.stop();
+            appendLog("Wireless AA bootstrap stopped (if it was running).");
+        });
+
         addSection(root, "Experimental: capture display content");
         addButton(root, "Test map capture (MediaProjection)", this::testCapture);
         Button toggleCapture = addButton(root, "Use captured frame in cluster: OFF", null);
@@ -340,12 +379,19 @@ public class MainActivity extends android.app.Activity {
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode != REQ_GWM_GET_DATA) return;
         boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
-        appendLog("GET_DATA permission request result: " + (granted ? "GRANTED" : "DENIED")
-                + (granted ? " - real FDBus-based vehicle data access may be viable here, worth "
-                    + "building a proper data source for it." : " - this GWM build is blocking it for "
-                    + "third-party apps, matching com.tank.priborka not working on this car either."));
+        if (requestCode == REQ_GWM_GET_DATA) {
+            appendLog("GET_DATA permission request result: " + (granted ? "GRANTED" : "DENIED")
+                    + (granted ? " - real FDBus-based vehicle data access may be viable here, worth "
+                        + "building a proper data source for it." : " - this GWM build is blocking it for "
+                        + "third-party apps, matching com.tank.priborka not working on this car either."));
+            return;
+        }
+        if (requestCode == REQ_WIRELESS_LOCATION) {
+            appendLog("ACCESS_FINE_LOCATION permission request result: " + (granted ? "GRANTED - "
+                    + "press \"Run wireless AA bootstrap\" again to start it." : "DENIED - the "
+                    + "wireless bootstrap button will keep asking until this is granted."));
+        }
     }
 
     /** Manual decode instead of PermissionInfo.protectionToString() - that's a real framework

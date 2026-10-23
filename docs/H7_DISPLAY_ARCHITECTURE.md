@@ -676,3 +676,84 @@ Auto message/protocol layer being built here (`AaProtocol`, `VersionRequest`/`Re
 `SSL_HANDSHAKE` once built) is transport-agnostic and will be reused by whichever transport
 (USB or wireless) actually gets a working session first - aasdk itself shares this same layer
 between its `USBTransport` and `TCPTransport`. Nothing done on USB so far is wasted by this pivot.
+
+## v0.32: wireless bootstrap - real, sourced sequence found and implemented (untested on-car)
+
+Research continued from where the above left off, using `aa-proxy/aa-proxy-rs`
+(https://github.com/aa-proxy/aa-proxy-rs, commit `5a6887d427f4b6f6395bf1d3d7d4d31f805e4f98`,
+GPLv2) - a real, actively-maintained open-source project that *also* acts as the head unit role in
+Android Auto Wireless (not just a proxy/MITM between a real head unit and a phone - it has its own
+working `send_params()` function doing exactly what ClusterProbe needs). Read directly from its
+`src/bluetooth.rs` and `src/protos/*.proto`, not guessed:
+
+- **The real, fixed Android-Auto-Wireless Bluetooth RFCOMM service UUID**:
+  `4de17a00-52cb-11e6-bdf4-0800200c9a66` (`AAWG_PROFILE_UUID` in aa-proxy-rs). Every phone's AA app
+  looks for an SDP record under exactly this UUID when attempting a wireless connection to a head
+  unit it has already Bluetooth-paired with the normal way.
+- **The real bootstrap message exchange**, confirmed from `send_params()` (the actual head-unit-role
+  function, not the MITM-relay code elsewhere in that file):
+  1. HU -> phone: `WifiStartRequest { ip_address, port }` - where the phone should open the real
+     Android Auto TCP session once it has joined the HU's Wi-Fi AP.
+  2. phone -> HU: `WifiInfoRequest` (empty body).
+  3. HU -> phone: `WifiInfoResponse { ssid, key, bssid, security_mode=WPA2_PERSONAL,
+     access_point_type=DYNAMIC }` - the HU's own hosted AP's credentials.
+  4. phone -> HU: `WifiStartResponse` (body has a documented but, even in aa-proxy-rs's own code,
+     unparsed status field - discarded by length, not decoded).
+  5. phone -> HU: `WifiConnectStatus` - aa-proxy-rs's own code checks only `buf[1] != 0`
+     (`[0x08, 0x00]` observed for success; a longer varint encoding of a large negative int64 for
+     failure). Reproduced exactly, not guessed at further.
+  6. Phone then opens a plain TCP connection to the `ip:port` from step 1, over the Wi-Fi network it
+     just joined - and from that point on it's the **same** AA Messenger protocol `AaProtocol`
+     already implements for USB (confirmed: aasdk itself shares one protocol layer between its
+     `USBTransport` and `TCPTransport` - this was not a guess, it's how the real spec is structured).
+- **Wire framing for this bootstrap channel only** (distinct from `AaProtocol`'s Messenger framing,
+  which still applies, unchanged, to everything after step 6): a flat 4-byte header - 2-byte
+  big-endian payload length + 2-byte big-endian message ID - then the raw payload. Read directly
+  from aa-proxy-rs's own `send_message()`/`read_message()` functions.
+- **The real `.proto` field layouts** for the two messages that actually carry data
+  (`WifiStartRequest`: `ip_address` string field 1, `port` int32 field 2; `WifiInfoResponse`: `ssid`
+  string 1, `key` string 2, `bssid` string 3, `security_mode` enum 4, `access_point_type` enum 5) -
+  vendored as field-layout copies (renamed to `AaWirelessStartRequest`/`AaWirelessInfoResponse` to
+  avoid any ambiguity with Android's own Wi-Fi classes) into `app/src/main/proto/`, same pattern as
+  the aasdk `.proto` files. See `app/src/main/proto/NOTICE.md` for full sourcing/licensing.
+- **How the HU side hosts its own Wi-Fi AP**: aa-proxy-rs does this with `hostapd`+`dnsmasq` on
+  Linux - not directly portable to Android. The Android-correct equivalent used here is the public,
+  unprivileged `WifiManager.startLocalOnlyHotspot()` API (added API 26, available on this head
+  unit's API 28) - `AaWirelessHotspot.java`. Needs `ACCESS_FINE_LOCATION` granted at runtime (a
+  platform requirement for hotspot credentials, treated like Wi-Fi scan results).
+
+**What was built this version** (new, disabled-by-default, same `AndroidAutoReceiver.enabled`
+master switch the USB path uses - one feature, two transports):
+- `AaWirelessConstants.java` - the UUID, message-ID constants, and the 4-byte bootstrap framing
+  read/write helpers.
+- `AaWirelessHotspot.java` - wraps `WifiManager.startLocalOnlyHotspot()`.
+- `AaWirelessBootstrapServer.java` - orchestrates the whole sequence: start hotspot -> open a TCP
+  `ServerSocket` (OS-assigned port) for the eventual AA session -> advertise + accept one Bluetooth
+  RFCOMM connection on the AAWG UUID -> run the bootstrap exchange -> accept the phone's resulting
+  TCP connection. Reports progress through the same `ConnectionStage.WIRELESS_BOOTSTRAP` stage (one
+  box, not many sub-stages, since unlike the USB path this is a single Bluetooth-then-Wi-Fi
+  handshake rather than several independently-testable hardware-protocol layers) via the existing
+  `AndroidAutoReceiver.StatusListener`/`StageStatus` types - no new status machinery needed.
+- New manifest permissions: `BLUETOOTH`, `BLUETOOTH_ADMIN` (legacy, this device's targetSdk 28 does
+  not need the API 31+ split permissions), `ACCESS_WIFI_STATE`, `CHANGE_WIFI_STATE`,
+  `ACCESS_FINE_LOCATION`. Does **not** touch Bluetooth discovery/pairing - the phone must already be
+  paired with this head unit the ordinary way; this only advertises one RFCOMM service and hosts a
+  local AP, both ordinary non-privileged app capabilities, consistent with every other boundary this
+  project has kept (never touching the signature-protected GWM interfaces, never interfering with
+  the factory GWM AA receiver or its pairing).
+- MainActivity: a new "Wireless AA bootstrap" section, gated behind the same master toggle plus a
+  runtime `ACCESS_FINE_LOCATION` request, with Run/Stop buttons mirroring the USB section's.
+
+**Deliberately stops at "phone's TCP connection accepted"** for this increment, then closes it and
+reports `TESTED_WORKING`/`TESTED_FAILING` - it is **not yet wired into `AaProtocol`'s
+VersionRequest/VersionResponse exchange**. `AaProtocol`'s read/write methods are currently written
+directly against `UsbDeviceConnection`/`UsbEndpoint`; generalizing them to also accept a plain
+`Socket`'s `InputStream`/`OutputStream` is a small, low-risk follow-up best done once this bootstrap
+itself has been confirmed working on real hardware - same build-in-stages approach used throughout
+this project (ACCESSORY_REOPEN before VERSION_EXCHANGE, etc.).
+
+**Status: built, compiles clean (stub harness), pushed, CI green. NOT yet tested on-car.** Per the
+project's standing rule, this is not described as working wireless AA - only as a real, sourced
+implementation of the bootstrap handshake, awaiting its first real test: phone already paired over
+Bluetooth, master toggle ON, location permission granted, then "Run wireless AA bootstrap" pressed
+while the phone's Android Auto app is told to connect wirelessly.

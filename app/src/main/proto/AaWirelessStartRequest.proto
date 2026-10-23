@@ -1,0 +1,25 @@
+// Vendored (field layout only - this .proto text itself is reproduced, the project's Rust code
+// using it is not) from:
+//   Project: aa-proxy-rs (https://github.com/aa-proxy/aa-proxy-rs)
+//   File:    src/protos/WifiStartRequest.proto
+//   Commit:  5a6887d427f4b6f6395bf1d3d7d4d31f805e4f98
+//   License: GNU GPLv2
+// This is the real message the head unit sends to the phone over the Android-Auto-Wireless
+// Bluetooth RFCOMM bootstrap channel (service UUID 4de17a00-52cb-11e6-bdf4-0800200c9a66), telling
+// the phone where to open the TCP connection for the actual Android Auto session once it has
+// joined the head unit's Wi-Fi AP. See AaWirelessBootstrap.java and
+// docs/H7_DISPLAY_ARCHITECTURE.md's "v0.32: wireless bootstrap" section.
+//
+// Renamed from the upstream "WifiStartRequest.proto" to "AaWirelessStartRequest.proto" (and the
+// message below from "WifiStartRequest" to "AaWirelessStartRequest") purely to avoid any
+// ambiguity with Android's own unrelated Wi-Fi classes - the wire format and field numbers are
+// unchanged from upstream.
+syntax = "proto2";
+option optimize_for = LITE_RUNTIME;
+option java_package = "com.clusterprobe.aareceiver.proto";
+option java_outer_classname = "AaWirelessStartRequestProto";
+
+message AaWirelessStartRequest {
+    required string ip_address = 1;
+    required int32 port = 2;
+}
