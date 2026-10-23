@@ -42,13 +42,20 @@ public final class AaWirelessManualConnect {
 
     /**
      * Off by default (same convention as every other experimental switch in this project). When
-     * true, the session Activity is launched on the cluster display (display 2) via Shizuku's
-     * privileged "am start --display" route instead of the default display's plain
-     * context.startActivity() - this is what lets THIS app, not a third-party receiver or GWM's
-     * own stock integration, decide where Android Auto's video ends up. GWM's own factory AA
-     * integration already shows maps on the cluster on this car, which is why this is worth
-     * trying rather than guessing - the display itself is confirmed to accept this kind of
-     * content, we just need our own app routed there instead.
+     * true, the session is hosted directly on the cluster display (display 2) instead of the
+     * default display's plain context.startActivity() - this is what lets THIS app, not a
+     * third-party receiver or GWM's own stock integration, decide where Android Auto's video ends
+     * up. GWM's own factory AA integration already shows maps on the cluster on this car, which is
+     * why this is worth trying rather than guessing - the display itself is confirmed to accept
+     * this kind of content, we just need our own app routed there instead.
+     *
+     * v0.40: the primary route is now OverlayManager.showAaSession() - a TYPE_APPLICATION_OVERLAY
+     * window on display 2, the same mechanism this project's own dial overlay already uses there
+     * successfully, and the same window type real on-car SmartSplit/Kafo Themes APKs were found
+     * using for their own "send app to the cluster" feature. No Shizuku needed for this path. The
+     * v0.37/v0.38 Shizuku "am start --display" route (via ThirdPartyAaLauncher) is kept as an
+     * automatic fallback if the overlay add fails for any reason (e.g. SYSTEM_ALERT_WINDOW not
+     * actually granted yet).
      */
     public static boolean launchOnClusterDisplay = false;
 
@@ -107,16 +114,30 @@ public final class AaWirelessManualConnect {
                     + "setup) and opening the session screen now.");
             setStage(status, AndroidAutoReceiver.StageStatus.TESTED_WORKING);
 
-            AndroidAutoSessionActivity.pendingSocket = socket;
-            socket = null; // ownership passed to the Activity - don't close it in finally below
+            final java.net.Socket handoffSocket = socket;
+            socket = null; // ownership passed onward from here - don't close it in finally below
 
             if (launchOnClusterDisplay) {
-                log(status, "launchOnClusterDisplay is ON - launching the session screen on the "
-                        + "cluster display via Shizuku instead of the default display.");
-                com.clusterprobe.ThirdPartyAaLauncher.launchOwnAaSessionOnDisplay(
-                        context, com.clusterprobe.ThirdPartyAaLauncher.CLUSTER_DISPLAY_ID,
-                        msg -> log(status, msg));
+                log(status, "launchOnClusterDisplay is ON - hosting the session in an overlay "
+                        + "window on the cluster display (TYPE_APPLICATION_OVERLAY, no Shizuku "
+                        + "needed - same mechanism the dial overlay already uses there).");
+                com.clusterprobe.OverlayManager.showAaSession(context,
+                        com.clusterprobe.ThirdPartyAaLauncher.CLUSTER_DISPLAY_ID, handoffSocket,
+                        new com.clusterprobe.OverlayManager.Result() {
+                            @Override public void ok() {
+                                log(status, "AA session overlay added on the cluster display.");
+                            }
+                            @Override public void fail(String reason) {
+                                log(status, "Overlay route failed (" + reason + ") - falling back "
+                                        + "to the Shizuku \"am start --display\" route.");
+                                AndroidAutoSessionActivity.pendingSocket = handoffSocket;
+                                com.clusterprobe.ThirdPartyAaLauncher.launchOwnAaSessionOnDisplay(
+                                        context, com.clusterprobe.ThirdPartyAaLauncher.CLUSTER_DISPLAY_ID,
+                                        msg -> log(status, msg));
+                            }
+                        });
             } else {
+                AndroidAutoSessionActivity.pendingSocket = handoffSocket;
                 android.content.Intent intent = new android.content.Intent(context, AndroidAutoSessionActivity.class);
                 intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
                 context.startActivity(intent);

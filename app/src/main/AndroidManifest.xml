@@ -90,5 +90,22 @@
             android:resizeableActivity="true"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
+
+        <!-- v0.40: the same standing capability SmartSplit/Kafo Themes both declare and rely on
+             for cluster/split-screen work (BIND_ACCESSIBILITY_SERVICE), configured programmatically
+             in ClusterProbeDashboardService.onServiceConnected() rather than via a meta-data XML
+             resource, since this project has no res/ resource tree yet. Declaring it here does not
+             turn it on - like SmartSplit/Kafo, the user must enable "ClusterProbe Dashboard" in
+             system Settings > Accessibility before Android will ever instantiate this class. See
+             the class's own doc comment for what it is and isn't doing yet. -->
+        <service
+            android:name=".ClusterProbeDashboardService"
+            android:label="ClusterProbe Dashboard"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

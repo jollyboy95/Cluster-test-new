@@ -1270,3 +1270,82 @@ falls back to Shizuku, the fallback path itself is already proven (v0.37 CI, nee
 still). Also still outstanding: getting the SmartSplit APK itself to inspect directly, which would
 settle definitively whether it uses this same AOSP carve-out or something else - offered to the
 user, not yet supplied.
+
+## v0.40: Android Auto video rendered as a cluster overlay, no Shizuku - plus the accessibility
+## service both reference apps rely on
+
+Two real on-car APKs pulled apart this session settled the question. SmartSplit
+(com.smartlink.smartsplit) and Kafo Themes (com.kafo.themes) - independently-built, both
+demonstrably able to send a whole app's window to the cluster display, no Shizuku/adb/root -
+share exactly one meaningful capability pair in their real manifests:
+`android.permission.SYSTEM_ALERT_WINDOW` + a `BIND_ACCESSIBILITY_SERVICE`-bound service, both
+literally class-named `DashboardService` in both apps (different packages, same class name, same
+"Vehicle dashboard overlay and split-screen automation for Haval..." description - clearly built
+from a shared white-label vendor SDK). Comparing the two was the key: SmartSplit also declares
+`WRITE_SECURE_SETTINGS`, `INJECT_EVENTS`, and the GWM-proprietary
+`com.gwm.android.multidisplay.permission.CHANGE_DATA`, but **Kafo Themes has none of those three**
+and reportedly does the same cluster-send trick anyway - ruling them out as the actual mechanism
+for this specific feature. SYSTEM_ALERT_WINDOW + an Accessibility Service is the common
+denominator, and both are fully public: no adb, no root, no signature permission, just a one-time
+"enable this app" toggle in system Settings > Accessibility (for the service) and the ordinary
+overlay permission prompt.
+
+**What changed, for our own Android Auto video specifically:**
+
+ClusterProbe's own dial overlay already proves the relevant piece works: `OverlayManager` has been
+successfully drawing `DialView` as a `TYPE_APPLICATION_OVERLAY` window directly on display 2 since
+earlier in this project, using only `SYSTEM_ALERT_WINDOW` - no Activity launch, so none of the
+`ActivityOptions.setLaunchDisplayId()` restriction that drove the whole v0.37-v0.39 Shizuku
+detour ever applied to it. The fix was to stop trying to get `AndroidAutoSessionActivity` (a real
+Activity) onto display 2, and instead host the SAME decode pipeline inside an overlay window like
+the dial already does:
+
+- `AaSessionOverlayView` (new) - `AndroidAutoSessionActivity`'s SurfaceView + MediaCodec decode
+  logic, repackaged as a plain `FrameLayout` instead of an `Activity`, so it can be added directly
+  via `WindowManager.addView()` rather than launched as a task.
+- `OverlayManager.showAaSession(Context, displayId, Socket, Result)` (new) - the exact same
+  display-scoped-`Context` + `TYPE_APPLICATION_OVERLAY` pattern `show()` already uses for the dial,
+  now hosting `AaSessionOverlayView` instead. `hide()` now also stops the AA session cleanly
+  (`AaSessionOverlayView.stopSession()`) before tearing the window down, not just for the dial case.
+- `AaWirelessManualConnect`'s `launchOnClusterDisplay` branch now calls `showAaSession()` as the
+  PRIMARY route - no Shizuku involved at all when it succeeds. The v0.37/v0.38 Shizuku
+  `ThirdPartyAaLauncher.launchOwnAaSessionOnDisplay()` path is kept as an automatic fallback only
+  if the overlay add throws (most likely cause: `SYSTEM_ALERT_WINDOW` not actually granted yet on
+  this install).
+
+`AndroidAutoSessionActivity` itself is untouched and still used for the default-display case
+(`launchOnClusterDisplay` off) - nothing is removed, this is additive.
+
+**What changed, standing capability:** `ClusterProbeDashboardService` (new) - a
+`BIND_ACCESSIBILITY_SERVICE`-bound Accessibility Service, the same standing capability
+SmartSplit/Kafo both hold, declared in the manifest (`android:permission=
+"android.permission.BIND_ACCESSIBILITY_SERVICE"`) and configured programmatically via
+`setServiceInfo()` in `onServiceConnected()` rather than a meta-data XML resource, since this
+project has no `res/` resource tree. **Currently inert** - it doesn't do anything with the events
+it receives yet. It exists so the project has the same standing building block SmartSplit/Kafo
+rely on, for future work that genuinely needs real cross-app window manipulation (most plausibly:
+relocating a THIRD-PARTY app's own window - Headunit Reloaded, DiAuto - to the cluster without
+Shizuku, which our own content doesn't need but theirs would). Confirming exactly how SmartSplit/
+Kafo's own `DashboardService` does that specific part would require decompiling their actual DEX
+bytecode, not just the manifest - not done yet, and nothing here is copied from either app; this
+is an independent, from-scratch implementation of the same standing Android capability both of
+them use. Declaring it in the manifest does not turn it on - like SmartSplit/Kafo, the user must
+enable "ClusterProbe Dashboard" in system Settings > Accessibility first.
+
+**Verification done before pushing:** added `Display`/`WindowManager`/`AccessibilityService`/
+`AccessibilityServiceInfo`/`AccessibilityEvent`/`Point` stubs (plus a minimal `DialView`
+stand-in, since the real one already compiles against the real SDK on every CI run and pulling in
+its full graphics dependency surface wasn't needed to verify this round's actual changes) to the
+project's stub-compile harness, copied in all four changed/new files
+(`ClusterProbeDashboardService.java`, `AaSessionOverlayView.java`, `OverlayManager.java`,
+`AaWirelessManualConnect.java`), recompiled clean - no errors - alongside everything already
+verified from v0.36-v0.39.
+
+**Status: not yet tested on-car.** Whether the overlay-hosted AA video actually decodes and
+displays correctly on display 2 this way, and whether `SYSTEM_ALERT_WINDOW` is already granted on
+this install (it should be, since the dial overlay already works there) - both unconfirmed until
+tried for real. If `launchOnClusterDisplay` is on and a manual-IP connect succeeds, the log will
+say "AA session overlay added on the cluster display" with no Shizuku involved, or will explain
+why it fell back. Next logical step once this is confirmed working: use it as the real foundation
+for the "new Newcastle cluster" the user wants to build - a real Android Auto map feed, live on
+the physical cluster, with the custom dial/overlay layer built around it on the same display.
