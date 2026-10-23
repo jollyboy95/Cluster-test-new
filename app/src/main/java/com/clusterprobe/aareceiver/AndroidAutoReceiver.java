@@ -149,6 +149,20 @@ public class AndroidAutoReceiver {
     }
 
     private boolean negotiateWithDevice(Context context, UsbManager usbManager, UsbDevice device, StatusListener status) {
+        // v0.28: on-car logs (2026-10-23) showed this phone stays in Google's accessory mode
+        // (vendorId=0x18D1) across separate runs of this app rather than reverting - so a device
+        // already in that state must skip the handshake entirely and go straight to opening it.
+        // Re-sending GetProtocol/SendString/StartAccessory to an already-accessory device isn't
+        // meaningful (those control transfers have no defined behaviour on that interface) even
+        // though it happened to return success harmlessly in those runs.
+        if (AoapNegotiator.isAccessoryDevice(device)) {
+            log(status, "AA receiver: " + AoapNegotiator.describe(device) + " is ALREADY in "
+                    + "accessory mode (vendorId=0x18d1) - skipping the GetProtocol/SendString/"
+                    + "StartAccessory handshake (not meaningful on a device already past it) and "
+                    + "going straight to ConnectionStage.ACCESSORY_REOPEN.");
+            return openAccessoryStage(context, usbManager, device, status);
+        }
+
         setStage(status, ConnectionStage.USB_PERMISSION, StageStatus.RUNNING);
         if (!usbManager.hasPermission(device)) {
             boolean granted = requestPermissionAndWait(context, usbManager, device, status);
@@ -166,6 +180,7 @@ public class AndroidAutoReceiver {
             log(status, "AA receiver: openDevice() returned null for " + device.getDeviceName() + ".");
             return false;
         }
+        boolean startedAccessory = false;
         try {
             setStage(status, ConnectionStage.AOAP_PROTOCOL_QUERY, StageStatus.RUNNING);
             AoapNegotiator.ProtocolQueryResult protocolResult = AoapNegotiator.queryProtocol(connection);
@@ -189,19 +204,126 @@ public class AndroidAutoReceiver {
             setStage(status, ConnectionStage.AOAP_START_ACCESSORY,
                     startResult.success ? StageStatus.TESTED_WORKING : StageStatus.TESTED_FAILING);
             if (!startResult.success) return false;
-
-            log(status, "AA receiver: USB/AOAP negotiation as far as this version implements it is "
-                    + "DONE. ConnectionStage.ACCESSORY_REOPEN onward (opening the re-enumerated "
-                    + "accessory, SSL handshake, auth, video) is NOT_IMPLEMENTED yet - nothing past "
-                    + "this point has happened. No video, no connection claim beyond what's logged "
-                    + "above.");
-            return true;
+            startedAccessory = true;
+            return true; // ACCESSORY_REOPEN (the wait-for-re-enumeration below) happens after
+                          // this connection is closed, since the old device object is about to
+                          // become invalid the moment the phone actually disconnects.
         } finally {
             try {
                 connection.close();
             } catch (Throwable ignored) {
             }
+            if (startedAccessory) {
+                waitForReenumerationAndOpen(context, usbManager, status);
+            }
         }
+    }
+
+    /**
+     * After a successful StartAccessory, the phone disconnects and re-enumerates with a new
+     * vendor/product ID - the old UsbDevice/UsbDeviceConnection are both dead the moment that
+     * happens. Listens for UsbManager.ACTION_USB_DEVICE_ATTACHED for a short window and opens
+     * whichever newly-attached device looks like an AOAP accessory. If nothing shows up in time,
+     * says so plainly rather than guessing - on this car, pressing "Run" again has reliably found
+     * the phone already in accessory mode (see the isAccessoryDevice branch above), so that
+     * remains a real fallback even when this automatic wait doesn't catch it.
+     */
+    private boolean waitForReenumerationAndOpen(Context context, UsbManager usbManager, StatusListener status) {
+        setStage(status, ConnectionStage.ACCESSORY_REOPEN, StageStatus.RUNNING);
+        log(status, "AA receiver: waiting up to 8s for the phone to re-enumerate in accessory mode...");
+        String action = UsbManager.ACTION_USB_DEVICE_ATTACHED;
+        CountDownLatch latch = new CountDownLatch(1);
+        UsbDevice[] foundHolder = {null};
+        BroadcastReceiver receiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context ctx, Intent intent) {
+                if (!action.equals(intent.getAction())) return;
+                UsbDevice attached = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
+                if (attached != null && AoapNegotiator.isAccessoryDevice(attached)) {
+                    foundHolder[0] = attached;
+                    latch.countDown();
+                }
+            }
+        };
+        boolean registered = true;
+        try {
+            context.registerReceiver(receiver, new IntentFilter(action));
+        } catch (Throwable t) {
+            log(status, "AA receiver: registerReceiver for " + action + " failed: " + t);
+            registered = false;
+        }
+        UsbDevice found = null;
+        try {
+            if (registered) {
+                latch.await(8, TimeUnit.SECONDS);
+                found = foundHolder[0];
+            }
+        } catch (InterruptedException ie) {
+            // fall through - found stays null
+        } finally {
+            if (registered) {
+                try { context.unregisterReceiver(receiver); } catch (Throwable ignored) { }
+            }
+        }
+        if (found == null) {
+            // Didn't catch the attach broadcast in time - but on this car the device has
+            // reliably still been sitting there in accessory mode on the next manual check, so
+            // do one direct poll of the current device list before giving up.
+            for (UsbDevice d : usbManager.getDeviceList().values()) {
+                if (AoapNegotiator.isAccessoryDevice(d)) {
+                    found = d;
+                    break;
+                }
+            }
+        }
+        if (found == null) {
+            log(status, "AA receiver: no accessory-mode device showed up within 8s. The phone may "
+                    + "still be re-enumerating - press \"Run USB AOAP negotiation\" again in a "
+                    + "moment; on this car it has reliably shown up as already-in-accessory-mode "
+                    + "on the next run even when this automatic wait misses it.");
+            setStage(status, ConnectionStage.ACCESSORY_REOPEN, StageStatus.TESTED_FAILING);
+            return false;
+        }
+        log(status, "AA receiver: re-enumerated as " + AoapNegotiator.describe(found) + ".");
+        return openAccessoryStage(context, usbManager, found, status);
+    }
+
+    /** Shared "open the already-accessory-mode device" logic - claim its interface, find bulk
+     *  IN/OUT endpoints. Reads/writes nothing on those endpoints; that starts at SSL_HANDSHAKE,
+     *  not implemented here. Does NOT close the connection on success - a later stage (not yet
+     *  implemented) needs it to stay open; closes it on failure since nothing further can happen. */
+    private boolean openAccessoryStage(Context context, UsbManager usbManager, UsbDevice device, StatusListener status) {
+        setStage(status, ConnectionStage.ACCESSORY_REOPEN, StageStatus.RUNNING);
+        if (!usbManager.hasPermission(device)) {
+            boolean granted = requestPermissionAndWait(context, usbManager, device, status);
+            if (!granted) {
+                log(status, "AA receiver: USB permission not granted for the re-enumerated accessory "
+                        + "device (" + device.getDeviceName() + ").");
+                setStage(status, ConnectionStage.ACCESSORY_REOPEN, StageStatus.TESTED_FAILING);
+                return false;
+            }
+        }
+        UsbDeviceConnection connection = usbManager.openDevice(device);
+        if (connection == null) {
+            log(status, "AA receiver: openDevice() returned null for the accessory-mode device.");
+            setStage(status, ConnectionStage.ACCESSORY_REOPEN, StageStatus.TESTED_FAILING);
+            return false;
+        }
+        AoapNegotiator.AccessoryEndpoints endpoints = AoapNegotiator.openAccessoryEndpoints(device, connection);
+        log(status, "AA receiver: open accessory interface -> " + endpoints.detail);
+        if (!endpoints.success) {
+            setStage(status, ConnectionStage.ACCESSORY_REOPEN, StageStatus.TESTED_FAILING);
+            try { connection.close(); } catch (Throwable ignored) { }
+            return false;
+        }
+        setStage(status, ConnectionStage.ACCESSORY_REOPEN, StageStatus.TESTED_WORKING);
+        log(status, "AA receiver: ConnectionStage.ACCESSORY_REOPEN is DONE - bulk endpoints found "
+                + "and interface claimed. ConnectionStage.SSL_HANDSHAKE onward (the actual Android "
+                + "Auto TLS/protocol session) is NOT_IMPLEMENTED yet - nothing has been read or "
+                + "written on these endpoints. No session, no video, no connection claim beyond "
+                + "what's logged above. Leaving the interface claimed/connection open for now "
+                + "(nothing currently closes it) since a future SSL_HANDSHAKE step will need it.");
+        return true;
     }
 
     private boolean requestPermissionAndWait(Context context, UsbManager usbManager, UsbDevice device, StatusListener status) {

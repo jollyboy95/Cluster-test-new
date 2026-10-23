@@ -17,7 +17,12 @@ public enum ConnectionStage {
     AOAP_PROTOCOL_QUERY("AOAP GetProtocol control transfer (ACCESSORY_GET_PROTOCOL, 0x33)"),
     AOAP_SEND_IDENTIFYING_STRINGS("AOAP SendString x6 (ACCESSORY_SEND_STRING, 0x34)"),
     AOAP_START_ACCESSORY("AOAP StartAccessory control transfer (ACCESSORY_START, 0x35)"),
-    ACCESSORY_REOPEN("Detect phone re-enumerating as a USB accessory and open it (UsbManager.openAccessory)"),
+    ACCESSORY_REOPEN("Detect the phone's new vendor/product ID after re-enumerating in accessory "
+            + "mode (or recognise it's already there from a prior run), then open it directly via "
+            + "UsbDeviceConnection + claimInterface + bulk IN/OUT endpoints - NOT "
+            + "UsbManager.openAccessory/UsbAccessory, which is the API for the opposite role (an "
+            + "app that IS the accessory being opened by someone else); ClusterProbe is the host "
+            + "here, so the re-enumerated phone is just a regular UsbDevice to us"),
     SSL_HANDSHAKE("TLS handshake over the raw accessory stream (Android Auto control channel)"),
     AUTH_COMPLETE("AuthCompleteIndication received - session authenticated"),
     SERVICE_DISCOVERY("ServiceDiscoveryRequest/Response - learn which channels the phone offers"),

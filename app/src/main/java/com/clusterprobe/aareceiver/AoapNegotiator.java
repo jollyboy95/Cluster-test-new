@@ -3,6 +3,8 @@ package com.clusterprobe.aareceiver;
 import android.hardware.usb.UsbConstants;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
+import android.hardware.usb.UsbEndpoint;
+import android.hardware.usb.UsbInterface;
 
 import java.nio.charset.StandardCharsets;
 
@@ -31,6 +33,14 @@ public final class AoapNegotiator {
     public static final int ACCESSORY_GET_PROTOCOL = 51;
     public static final int ACCESSORY_SEND_STRING = 52;
     public static final int ACCESSORY_START = 53;
+
+    /** Google's USB vendor ID, used once a device has switched into accessory mode. */
+    public static final int GOOGLE_VENDOR_ID = 0x18D1;
+    /** The accessory-mode product ID range Google documents (plain accessory, +adb, +audio
+     *  variants). A device matching vendor+one of these product IDs has ALREADY completed the
+     *  GetProtocol/SendString/StartAccessory handshake (in this run or an earlier one) and must
+     *  not be sent that handshake again - go straight to opening it instead. */
+    private static final int[] ACCESSORY_PRODUCT_IDS = {0x2D00, 0x2D01, 0x2D02, 0x2D03, 0x2D04, 0x2D05};
 
     private static final int STRING_ID_MANUFACTURER = 0;
     private static final int STRING_ID_MODEL = 1;
@@ -77,7 +87,111 @@ public final class AoapNegotiator {
         static StepResult fail(String detail) { return new StepResult(false, detail); }
     }
 
+    public static final class AccessoryEndpoints {
+        public final boolean success;
+        public final UsbInterface iface; // null on failure
+        public final UsbEndpoint bulkIn; // null on failure
+        public final UsbEndpoint bulkOut; // null on failure
+        public final String detail;
+
+        private AccessoryEndpoints(boolean success, UsbInterface iface, UsbEndpoint bulkIn,
+                                    UsbEndpoint bulkOut, String detail) {
+            this.success = success;
+            this.iface = iface;
+            this.bulkIn = bulkIn;
+            this.bulkOut = bulkOut;
+            this.detail = detail;
+        }
+
+        static AccessoryEndpoints ok(UsbInterface iface, UsbEndpoint in, UsbEndpoint out, String detail) {
+            return new AccessoryEndpoints(true, iface, in, out, detail);
+        }
+
+        static AccessoryEndpoints fail(String detail) {
+            return new AccessoryEndpoints(false, null, null, null, detail);
+        }
+    }
+
     private AoapNegotiator() {
+    }
+
+    /**
+     * True if this device's vendor/product ID matches Google's documented accessory-mode range -
+     * i.e. it has ALREADY completed the GetProtocol/SendString/StartAccessory handshake, either
+     * just now (re-enumerated after StartAccessory) or in an earlier run of this app (confirmed
+     * on-car: the phone stayed in accessory mode across separate runs rather than reverting).
+     * Sending the handshake to a device already in this state is pointless - skip straight to
+     * openAccessoryEndpoints instead.
+     */
+    public static boolean isAccessoryDevice(UsbDevice device) {
+        if (device.getVendorId() != GOOGLE_VENDOR_ID) return false;
+        for (int pid : ACCESSORY_PRODUCT_IDS) {
+            if (device.getProductId() == pid) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Opens a device that's already in accessory mode: claims its single vendor-specific
+     * interface and finds its bulk IN/OUT endpoints. This is as far as ConnectionStage.
+     * ACCESSORY_REOPEN goes - it does NOT read or write anything on those endpoints yet (that
+     * starts at ConnectionStage.SSL_HANDSHAKE, not implemented here). A real Android Auto
+     * accessory interface has exactly one bulk IN and one bulk OUT endpoint and nothing else;
+     * anything short of that is treated as a failure rather than guessed at.
+     */
+    public static AccessoryEndpoints openAccessoryEndpoints(UsbDevice device, UsbDeviceConnection connection) {
+        int ifaceCount;
+        try {
+            ifaceCount = device.getInterfaceCount();
+        } catch (Throwable t) {
+            return AccessoryEndpoints.fail("getInterfaceCount() threw: " + t);
+        }
+        if (ifaceCount <= 0) {
+            return AccessoryEndpoints.fail("device reports " + ifaceCount + " interface(s) - expected at least 1.");
+        }
+        for (int i = 0; i < ifaceCount; i++) {
+            UsbInterface candidate;
+            try {
+                candidate = device.getInterface(i);
+            } catch (Throwable t) {
+                continue;
+            }
+            if (candidate == null) continue;
+            UsbEndpoint in = null;
+            UsbEndpoint out = null;
+            int epCount;
+            try {
+                epCount = candidate.getEndpointCount();
+            } catch (Throwable t) {
+                continue;
+            }
+            for (int e = 0; e < epCount; e++) {
+                UsbEndpoint ep;
+                try {
+                    ep = candidate.getEndpoint(e);
+                } catch (Throwable t) {
+                    continue;
+                }
+                if (ep == null || ep.getType() != UsbConstants.USB_ENDPOINT_XFER_BULK) continue;
+                if (ep.getDirection() == UsbConstants.USB_DIR_IN) in = ep;
+                else if (ep.getDirection() == UsbConstants.USB_DIR_OUT) out = ep;
+            }
+            if (in == null || out == null) continue; // not the right interface - keep looking
+            boolean claimed;
+            try {
+                claimed = connection.claimInterface(candidate, true);
+            } catch (Throwable t) {
+                return AccessoryEndpoints.fail("claimInterface() threw on interface #" + i + ": " + t);
+            }
+            if (!claimed) {
+                return AccessoryEndpoints.fail("claimInterface() returned false on interface #" + i
+                        + " - another process may already hold it.");
+            }
+            return AccessoryEndpoints.ok(candidate, in, out, "interface #" + i + " claimed, bulk IN="
+                    + in.getAddress() + " bulk OUT=" + out.getAddress() + ".");
+        }
+        return AccessoryEndpoints.fail("no interface with one bulk IN + one bulk OUT endpoint found "
+                + "across " + ifaceCount + " interface(s) - not a recognisable AOAP accessory interface.");
     }
 
     /**

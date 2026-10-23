@@ -510,3 +510,57 @@ CarPlay/CarPlay Ultra receiver alongside the Android Auto one. A working, non-pr
 read physical button events would be useful groundwork for both - but input *injection*/synthetic
 interaction is explicitly out of scope for this increment, and nothing here claims button control
 works, only that button *reading* is being probed.
+
+## v0.28: first real on-car success - USB/AOAP handshake confirmed working, ACCESSORY_REOPEN added
+
+On-car logs (2026-10-23, two separate runs) showed, for the first time in this project, a real
+phone completing every USB/AOAP stage this app implements: `USB_DEVICE_ENUMERATION`,
+`USB_PERMISSION`, `AOAP_PROTOCOL_QUERY` (phone answered "AOAP protocol version 2 supported"),
+`AOAP_SEND_IDENTIFYING_STRINGS` ("All 6 identifying strings accepted"), and `AOAP_START_ACCESSORY`
+("StartAccessory sent (result=0)") all reached `TESTED_WORKING` against a real Samsung phone
+(`vendorId=0x18d1 productId=0x2d01`) on the actual car. This is real, not simulated - the control
+transfers genuinely round-tripped over USB to the phone and back.
+
+**One thing the logs also showed that needed fixing:** in both runs the phone was already in
+Google's accessory mode (`vendorId=0x18d1`, Google's vendor ID - not a Samsung vendor ID) by the
+time the probe ran, meaning it stayed in accessory mode across separate app runs rather than
+reverting back to being a normal phone. v0.27's code didn't account for this - it re-sent the full
+GetProtocol/SendString/StartAccessory handshake to a device that had already completed it. That
+happened to return success harmlessly, but re-sending AOAP's own setup handshake to an
+already-switched-over accessory interface isn't meaningful protocol behaviour and isn't something
+to rely on.
+
+**What v0.28 adds:**
+- `AoapNegotiator.isAccessoryDevice(UsbDevice)` - detects Google's vendor ID (0x18D1) plus any of
+  the documented accessory-mode product IDs (0x2D00-0x2D05).
+- `AndroidAutoReceiver.negotiateWithDevice` now checks this FIRST: a device already in accessory
+  mode skips the handshake entirely and goes straight to `ConnectionStage.ACCESSORY_REOPEN`.
+- A real `ACCESSORY_REOPEN` implementation: `AoapNegotiator.openAccessoryEndpoints` claims the
+  device's vendor-specific USB interface and finds its bulk IN/OUT endpoints - the real mechanism
+  for talking to an AOAP accessory as the HOST side (ClusterProbe here is the host; the phone is
+  the accessory). This is deliberately NOT `UsbManager.openAccessory`/`UsbAccessory` - that API is
+  for the opposite role (an Android app that IS the accessory being opened by someone else), which
+  doesn't apply here. `ConnectionStage.ACCESSORY_REOPEN`'s description was corrected to say this
+  explicitly, since the original v0.26 description was wrong about which API applies.
+- For a device NOT yet in accessory mode: after `StartAccessory` succeeds, the app now
+  automatically listens for `UsbManager.ACTION_USB_DEVICE_ATTACHED` for up to 8 seconds (the old
+  `UsbDevice`/`UsbDeviceConnection` are dead the instant the phone actually disconnects to
+  re-enumerate), and opens whatever newly-attached device matches `isAccessoryDevice`. If nothing
+  shows up in that window, it falls back to one direct poll of the current device list before
+  giving up - and still tells the user that pressing "Run" again has reliably found the phone
+  already in accessory mode on this car even when the automatic wait misses the exact moment.
+
+**What v0.28 explicitly does NOT do:** read or write anything on the claimed bulk endpoints. That
+starts at `ConnectionStage.SSL_HANDSHAKE` - the actual Android Auto TLS session over those
+endpoints - which remains entirely unimplemented. On success, `openAccessoryStage` deliberately
+leaves the `UsbDeviceConnection` open (not closed) since a future SSL-handshake step will need it;
+nothing currently uses that open connection for anything. No Android Auto session exists yet, no
+video, nothing beyond "a bulk-capable accessory interface was found and claimed" - consistent with
+this project's standing rule not to claim a working receiver until a real phone connection and
+video frame have actually been demonstrated.
+
+**Next real milestone:** `ConnectionStage.SSL_HANDSHAKE` - a TLS handshake run manually over the
+raw bulk IN/OUT byte stream rather than a normal `Socket`/`SSLSocket` (there is no socket here,
+just two USB bulk endpoints), almost certainly via `javax.net.ssl.SSLEngine`'s non-blocking,
+buffer-based API, which is designed for exactly this kind of non-socket transport. This is real,
+substantially harder work than everything implemented so far, and is the next increment.
