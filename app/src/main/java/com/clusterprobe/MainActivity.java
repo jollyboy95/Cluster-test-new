@@ -286,6 +286,62 @@ public class MainActivity extends android.app.Activity {
             appendLog("Wi-Fi Direct probe stopped (if it was running).");
         });
 
+        addSection(root, "Known-working third-party AA receiver on cluster/HUD (Shizuku \"am start --display\")");
+        addLabel(root, "Headunit Reloaded is confirmed working on this car by direct testing. This "
+                + "launches its own already-installed app straight onto display " + CLUSTER_DISPLAY_ID
+                + " or " + HUD_DISPLAY_ID + " via the same shell-level \"am start --display\" route "
+                + "that already works for our own ClusterActivity - no code of theirs is used, this "
+                + "just opens their app the way tapping its icon would, aimed at a different screen. "
+                + "Runs in parallel with our own receiver above, not instead of it.");
+        addButton(root, "Launch Headunit Reloaded on cluster (display " + CLUSTER_DISPLAY_ID + ")", () -> {
+            if (!ThirdPartyAaLauncher.isInstalled(getApplicationContext(), ThirdPartyAaLauncher.HEADUNIT_RELOADED_PACKAGE)) {
+                appendLog("Headunit Reloaded (" + ThirdPartyAaLauncher.HEADUNIT_RELOADED_PACKAGE
+                        + ") is not installed on this unit.");
+                return;
+            }
+            ThirdPartyAaLauncher.launchOnDisplay(CLUSTER_DISPLAY_ID, ThirdPartyAaLauncher.HEADUNIT_RELOADED_PACKAGE,
+                    ThirdPartyAaLauncher.HEADUNIT_RELOADED_LAUNCH_ACTIVITY, this::appendLog);
+        });
+        addButton(root, "Launch Headunit Reloaded on HUD (display " + HUD_DISPLAY_ID + ") - experimental", () -> {
+            if (!ThirdPartyAaLauncher.isInstalled(getApplicationContext(), ThirdPartyAaLauncher.HEADUNIT_RELOADED_PACKAGE)) {
+                appendLog("Headunit Reloaded (" + ThirdPartyAaLauncher.HEADUNIT_RELOADED_PACKAGE
+                        + ") is not installed on this unit.");
+                return;
+            }
+            ThirdPartyAaLauncher.launchOnDisplay(HUD_DISPLAY_ID, ThirdPartyAaLauncher.HEADUNIT_RELOADED_PACKAGE,
+                    ThirdPartyAaLauncher.HEADUNIT_RELOADED_LAUNCH_ACTIVITY, this::appendLog);
+        });
+        addLabel(root, "DiAuto has a real cluster feature on BYD cars, but it's a BYD-specific "
+                + "broadcast this car almost certainly has no receiver for - not installed/confirmed "
+                + "on this car yet either (get a release APK from its GitHub releases page first). "
+                + "These buttons target its own video Activity directly, same generic display-forcing "
+                + "trick, no BYD dependency - this is the \"push the whole map to display 2\" test.");
+        addButton(root, "Launch DiAuto on cluster (display " + CLUSTER_DISPLAY_ID + ")", () -> {
+            if (!ThirdPartyAaLauncher.isInstalled(getApplicationContext(), ThirdPartyAaLauncher.DIAUTO_PACKAGE)) {
+                appendLog("DiAuto (" + ThirdPartyAaLauncher.DIAUTO_PACKAGE + ") is not installed on this unit.");
+                return;
+            }
+            ThirdPartyAaLauncher.launchOnDisplay(CLUSTER_DISPLAY_ID, ThirdPartyAaLauncher.DIAUTO_PACKAGE,
+                    ThirdPartyAaLauncher.DIAUTO_LAUNCH_ACTIVITY, this::appendLog);
+        });
+        addButton(root, "Launch DiAuto on HUD (display " + HUD_DISPLAY_ID + ") - experimental", () -> {
+            if (!ThirdPartyAaLauncher.isInstalled(getApplicationContext(), ThirdPartyAaLauncher.DIAUTO_PACKAGE)) {
+                appendLog("DiAuto (" + ThirdPartyAaLauncher.DIAUTO_PACKAGE + ") is not installed on this unit.");
+                return;
+            }
+            ThirdPartyAaLauncher.launchOnDisplay(HUD_DISPLAY_ID, ThirdPartyAaLauncher.DIAUTO_PACKAGE,
+                    ThirdPartyAaLauncher.DIAUTO_LAUNCH_ACTIVITY, this::appendLog);
+        });
+        addButton(root, "Request Shizuku permission (needed for the above)", () -> {
+            try {
+                Shizuku.requestPermission(4204);
+                appendLog("Shizuku permission requested - respond to the prompt, then retry the launch button.");
+            } catch (Throwable t) {
+                appendLog("Shizuku.requestPermission() threw: " + t
+                        + " - is the Shizuku app/service running on this unit?");
+            }
+        });
+
         addSection(root, "Experimental: capture display content");
         addButton(root, "Test map capture (MediaProjection)", this::testCapture);
         Button toggleCapture = addButton(root, "Use captured frame in cluster: OFF", null);

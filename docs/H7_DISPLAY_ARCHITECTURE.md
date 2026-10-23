@@ -1075,3 +1075,58 @@ copied):**
   Car App Library) remains the right approach for this hardware. Worth returning to as a reference
   for *what data a cluster view needs* (its `ClusterNavigationState.kt`) once this project reaches
   that phase, not for *how it's bound to the display*.
+
+## v0.37: run the known-working apps on display 2/3 in parallel with our own receiver
+
+Per the user's own call (both paths, in parallel, not one instead of the other): added a way to
+launch an already-installed, already-confirmed-working third-party AA receiver directly onto the
+cluster or HUD display, via the same "am start --display" route MainActivity's own
+launchOnDisplay() already found and logged as the workaround for ActivityOptions.setLaunchDisplayId
+being denied to an ordinary app's in-process call. This is NOT a shortcut around testing, and NOT
+copying any of their code - it runs the already-installed app exactly as tapping its icon would,
+just aimed at a different display, the same way the user already confirmed display 2 accepts our
+own ClusterActivity's windows.
+
+**New file:** `ThirdPartyAaLauncher.java` - `isInstalled()` checks the package is present;
+`launchOnDisplay(displayId, packageName, activityName, listener)` runs `am start --display <id> -n
+<pkg>/<activity>` through `Shizuku.newProcess()` (shell-equivalent privilege, same Shizuku
+permission the GWM logcat data source already uses) on a background thread, with results posted
+back to the main thread via `Handler` before touching the listener (matching this project's
+existing convention from `AaWirelessManualConnect`'s own `log()` helper - the caller posts to main,
+not the listener).
+
+**Two targets wired up, both read from real source/manifest data, not guessed:**
+- **Headunit Reloaded** (`gb.xxy.hr`, `.activities.DispatcherActivity`) - package/activity read
+  from the user's own confirmed-working, uploaded APK's binary manifest. The safer bet to test
+  first: it's the one actually confirmed working on this car already.
+- **DiAuto** (`com.andrerinas.headunitrevived`, `.aap.AapProjectionActivity`) - package/activity
+  read from its own real source (`AndroidManifest.xml`, `build.gradle.kts`), not an APK - the user
+  has NOT confirmed this one installed/working on this car. DiAuto's own documented
+  instrument-cluster feature is BYD-specific (sends BYD's "AutoNavi" broadcast to a BYD-shipped
+  `ClusterDebug` receiver - see the DiPlay/DiAuto addendum above) and almost certainly has no GWM
+  equivalent on this car, so installing it would not automatically put maps on this cluster the way
+  it does on a BYD. Targeting `AapProjectionActivity` directly (the window that actually shows live
+  AA video, not its home/settings screen) with this launcher is the OEM-independent mechanism
+  instead - same trick as Headunit Reloaded, just aimed at a different app's window. This project
+  has no Android SDK/NDK in its build environment to compile DiAuto from source; a release APK
+  would need to come from its GitHub Releases page and be sideloaded first.
+
+Two new MainActivity buttons per app (cluster display, HUD display) plus a Shizuku-permission
+request button, under a new "Known-working third-party AA receiver on cluster/HUD" section.
+
+**Verification done before pushing:** isolated stub-compile of `ThirdPartyAaLauncher.java` alone
+(a minimal harness - PackageManager/PackageInfo/Context/Shizuku stubs only, rather than extending
+the full harness to cover MainActivity's entire unrelated feature surface, which already compiles
+against the real Android SDK on every CI run). This caught a real bug before it shipped: the
+background thread in `runShellCommand()` was calling the listener directly, but
+`MainActivity.appendLog()` touches a `TextView` with no internal main-thread posting of its own -
+exactly the kind of cross-thread UI touch that crashes at runtime, not at compile time. Fixed by
+adding `postStatus()`, matching the established pattern. The new MainActivity button block itself
+was reviewed by hand against the file's own existing `addButton`/`addLabel`/`appendLog` signatures
+rather than full-harness-compiled, given the surrounding file already builds cleanly on every real
+CI run and the new block only calls those same, already-proven methods.
+
+**Status: not yet tested on-car.** Neither the Headunit Reloaded nor DiAuto launch buttons have
+been pressed on the real car yet. This runs alongside, not instead of, this project's own
+from-scratch receiver (AaSessionRunner etc., v0.36) - both are being tried in parallel, per the
+user's explicit choice.
