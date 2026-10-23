@@ -69,9 +69,10 @@ public final class AaProtocol {
      *  well-documented reliability problems on several SoCs, Qualcomm platforms (this head unit's
      *  SA8155) among them - community Android-Auto-host implementations generally use the
      *  asynchronous UsbRequest/requestWait() API for bulk reads specifically because of this.
-     *  Switched readExactly to that below. Not a certain fix - genuinely don't know yet whether
-     *  this was the real cause or something else (e.g. the phone just needing longer before its
-     *  first response) - this is the most plausible, well-precedented explanation to try first. */
+     *  Switched reads to that (see readOnce/readMessage below). That alone wasn't the whole
+     *  answer though: the next on-car run showed requestWait() genuinely completing (no more hard
+     *  timeout) but with 0 bytes, on two separate fresh runs - see readMessage's own doc comment
+     *  for the single-larger-buffer-plus-retry change made in response to that. */
     private static final int READ_TIMEOUT_MS = 6000;
 
     public static final class AaMessage {
@@ -139,18 +140,57 @@ public final class AaProtocol {
                 + " bytes total (" + body.length + "-byte body).");
     }
 
+    /** Generous upper bound for a single read - comfortably larger than any message this class
+     *  currently sends or expects (VersionResponse is a handful of bytes). Reading everything in
+     *  one shot, rather than a precise 4-byte header read followed by a precise payload read,
+     *  deliberately avoids a real pitfall: if the phone sends its whole reply as ONE USB
+     *  transfer, asking for a smaller piece first can interact badly with some USB controllers -
+     *  a 2026-10-23 on-car test showed the header-only read completing with 0 bytes on two
+     *  separate fresh runs, which this single-larger-buffer approach is meant to rule out (or
+     *  confirm isn't the cause, if it still returns 0). */
+    private static final int READ_BUFFER_SIZE = 512;
+    private static final int READ_RETRY_ATTEMPTS = 3;
+    private static final long READ_RETRY_DELAY_MS = 150;
+
     /** Reads exactly one single-frame (BULK) message. Fails cleanly (not a crash) if a
      *  MIDDLE/FIRST/LAST multi-frame sequence is seen, since reassembly isn't implemented. */
     public static Result readMessage(UsbDeviceConnection connection, UsbEndpoint bulkIn) {
-        byte[] header = new byte[4]; // 2-byte frame header + 2-byte SHORT size
-        Result headerResult = readExactly(connection, bulkIn, header);
-        if (!headerResult.success) return headerResult;
+        byte[] data = new byte[READ_BUFFER_SIZE];
+        int length;
+        int attempt = 0;
+        while (true) {
+            attempt++;
+            ChunkResult cr = readOnce(connection, bulkIn, data);
+            if (cr.hardFailure != null) return Result.fail(cr.hardFailure);
+            if (cr.length > 0) {
+                length = cr.length;
+                break;
+            }
+            // Zero-byte completion (not a timeout - a genuine completed request with nothing in
+            // it). Could be a spurious/premature empty completion rather than a real "nothing to
+            // read" - retry a few times with a short delay before giving up.
+            if (attempt >= READ_RETRY_ATTEMPTS) {
+                return Result.fail("received a 0-byte completion on all " + READ_RETRY_ATTEMPTS
+                        + " attempt(s) - the phone does not appear to be sending a response at "
+                        + "all, not just a framing/chunking problem on our side.");
+            }
+            try {
+                Thread.sleep(READ_RETRY_DELAY_MS);
+            } catch (InterruptedException ie) {
+                return Result.fail("interrupted while retrying after a 0-byte completion.");
+            }
+        }
 
-        int channelId = header[0] & 0xFF;
-        int flags = header[1] & 0xFF;
+        if (length < 4) {
+            return Result.fail("received only " + length + " byte(s) - too small to even hold a "
+                    + "2-byte frame header + 2-byte size (need >=4).");
+        }
+
+        int channelId = data[0] & 0xFF;
+        int flags = data[1] & 0xFF;
         int frameType = flags & FRAME_TYPE_BULK; // FIRST|LAST bits
         boolean encrypted = (flags & ENCRYPTION_ENCRYPTED) != 0;
-        int shortSize = ((header[2] & 0xFF) << 8) | (header[3] & 0xFF);
+        int shortSize = ((data[2] & 0xFF) << 8) | (data[3] & 0xFF);
 
         if (frameType != FRAME_TYPE_BULK) {
             return Result.fail("received a " + frameTypeName(frameType) + " frame (channel="
@@ -162,19 +202,63 @@ public final class AaProtocol {
             return Result.fail("frame declares a " + shortSize + "-byte payload - too small to "
                     + "even hold a 2-byte message ID.");
         }
+        if (4 + shortSize > length) {
+            return Result.fail("frame declares a " + shortSize + "-byte payload, but this read "
+                    + "only captured " + (length - 4) + " payload byte(s) (" + length + " total) - "
+                    + "the response may have arrived across more than one USB transfer, which "
+                    + "isn't handled here yet.");
+        }
 
-        byte[] payload = new byte[shortSize];
-        Result payloadResult = readExactly(connection, bulkIn, payload);
-        if (!payloadResult.success) return payloadResult;
-
-        int messageId = ((payload[0] & 0xFF) << 8) | (payload[1] & 0xFF);
-        byte[] body = new byte[payload.length - 2];
-        System.arraycopy(payload, 2, body, 0, body.length);
+        int messageId = ((data[4] & 0xFF) << 8) | (data[5] & 0xFF);
+        byte[] body = new byte[shortSize - 2];
+        System.arraycopy(data, 6, body, 0, body.length);
 
         AaMessage msg = new AaMessage(channelId, messageId, body);
         return Result.okMessage(msg, "channel=" + channelId + " messageId=0x"
                 + Integer.toHexString(messageId) + " " + (encrypted ? "ENCRYPTED" : "PLAIN")
-                + " body=" + body.length + " bytes.");
+                + " body=" + body.length + " bytes (read " + length + " bytes total on attempt "
+                + attempt + ").");
+    }
+
+    private static final class ChunkResult {
+        final int length; // 0 if nothing was received (but not a hard failure)
+        final String hardFailure; // non-null only for a real error/timeout, not a 0-byte completion
+        ChunkResult(int length, String hardFailure) { this.length = length; this.hardFailure = hardFailure; }
+    }
+
+    /** One UsbRequest/requestWait cycle into `out`. Returns length=0 (not a failure) for a
+     *  genuine zero-byte completion, so the caller can decide whether to retry. */
+    private static ChunkResult readOnce(UsbDeviceConnection connection, UsbEndpoint bulkIn, byte[] out) {
+        UsbRequest request = new UsbRequest();
+        ByteBuffer buffer = ByteBuffer.allocate(out.length);
+        try {
+            if (!request.initialize(connection, bulkIn)) {
+                return new ChunkResult(0, "UsbRequest.initialize() returned false.");
+            }
+            if (!request.queue(buffer)) {
+                return new ChunkResult(0, "UsbRequest.queue() returned false.");
+            }
+            UsbRequest completed;
+            try {
+                completed = connection.requestWait(READ_TIMEOUT_MS);
+            } catch (Throwable t) {
+                return new ChunkResult(0, "requestWait() threw: " + t);
+            }
+            if (completed == null) {
+                return new ChunkResult(0, "requestWait() timed out after " + READ_TIMEOUT_MS + "ms.");
+            }
+            int n = buffer.position();
+            if (n <= 0) {
+                return new ChunkResult(0, null); // genuine 0-byte completion, not a hard failure
+            }
+            buffer.flip();
+            buffer.get(out, 0, n);
+            return new ChunkResult(n, null);
+        } catch (Throwable t) {
+            return new ChunkResult(0, "readOnce threw: " + t);
+        } finally {
+            try { request.close(); } catch (Throwable ignored) { }
+        }
     }
 
     private static String frameTypeName(int frameType) {
@@ -186,54 +270,6 @@ public final class AaProtocol {
         }
     }
 
-    /** Loops reads into `out` until it's full or a read fails/times out. Uses the asynchronous
-     *  UsbRequest/requestWait() API rather than the synchronous UsbDeviceConnection.bulkTransfer()
-     *  used for writes - see the READ_TIMEOUT_MS comment above for why (a 2026-10-23 on-car run
-     *  showed a write via bulkTransfer succeeding while the read via bulkTransfer reliably timed
-     *  out on this exact hardware, which matches a known class of synchronous-bulk-read
-     *  reliability problem on several Android USB host controllers). */
-    private static Result readExactly(UsbDeviceConnection connection, UsbEndpoint bulkIn, byte[] out) {
-        int got = 0;
-        while (got < out.length) {
-            int remaining = out.length - got;
-            UsbRequest request = new UsbRequest();
-            ByteBuffer buffer = ByteBuffer.allocate(remaining);
-            try {
-                if (!request.initialize(connection, bulkIn)) {
-                    return Result.fail("UsbRequest.initialize() returned false after " + got + "/"
-                            + out.length + " bytes.");
-                }
-                if (!request.queue(buffer)) {
-                    return Result.fail("UsbRequest.queue() returned false after " + got + "/"
-                            + out.length + " bytes.");
-                }
-                UsbRequest completed;
-                try {
-                    completed = connection.requestWait(READ_TIMEOUT_MS);
-                } catch (Throwable t) {
-                    return Result.fail("requestWait() threw after " + got + "/" + out.length
-                            + " bytes: " + t);
-                }
-                if (completed == null) {
-                    return Result.fail("requestWait() timed out after " + READ_TIMEOUT_MS
-                            + "ms (got " + got + "/" + out.length + " bytes so far).");
-                }
-                int n = buffer.position(); // bytes actually transferred into the buffer
-                if (n <= 0) {
-                    return Result.fail("UsbRequest completed with " + n + " bytes after " + got
-                            + "/" + out.length + " bytes (nothing sent, or a zero-length packet).");
-                }
-                buffer.flip();
-                buffer.get(out, got, n);
-                got += n;
-            } catch (Throwable t) {
-                return Result.fail("readExactly threw after " + got + "/" + out.length + " bytes: " + t);
-            } finally {
-                try { request.close(); } catch (Throwable ignored) { }
-            }
-        }
-        return Result.ok("read " + out.length + " bytes (via UsbRequest).");
-    }
 
     /** Builds a VersionRequest body: 4 bytes = major(BE uint16) + minor(BE uint16), per
      *  ControlServiceChannel::sendVersionRequest in the real aasdk source. Not protobuf-encoded -

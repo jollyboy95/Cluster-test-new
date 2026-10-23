@@ -651,3 +651,28 @@ real session (it deliberately stops the moment `VERSION_EXCHANGE` fails), so the
 to whatever can actually finish a handshake. Same "swap not tap" behaviour already confirmed with
 Head Unit Revived on this car - will keep happening on every test run until this receiver actually
 completes a full session, not something to fix separately.
+
+## v0.31: read path narrowed further, then work paused to investigate wireless instead
+
+On-car logs (2026-10-23) after v0.30's switch to async `UsbRequest` reads: the hard timeout is
+gone (`requestWait()` genuinely completes now) but on two separate fresh runs it completed with
+**0 bytes** - a different, more specific symptom than before. `AaProtocol.readMessage` was
+rewritten to read into one generous single buffer (512 bytes) with up to 3 retries on a 0-byte
+completion, rather than two separate precise reads (4-byte header, then N-byte payload) - splitting
+reads like that is a known pitfall if the phone sends its whole reply as one USB transfer. Also
+removed the now-dead `readExactly` helper. **This has not been tested on-car yet** - it's an
+untested, plausible next attempt, not a confirmed fix, same honesty bar as v0.30's change.
+
+**Work on the USB path is paused here, at the user's explicit direction, to investigate the
+wireless (Wi-Fi) bootstrap path instead** - not because the USB approach stopped being promising
+(it's arguably closer to a real result than anything in this project so far: AOAP handshake,
+interface/endpoint claim, and the VersionRequest *write* have all been confirmed working against
+real hardware) but because the user wants the physical convenience of not needing a USB cable for
+each test cycle, having weighed the trade-off explicitly (recorded here for continuity): the
+wireless bootstrap (Bluetooth AA-Wireless discovery/pairing, Wi-Fi credential exchange, this head
+unit hosting its own Wi-Fi hotspot, then a TCP session over that link) is a separate, harder,
+currently entirely unstarted problem - aasdk itself doesn't implement it at all. The actual Android
+Auto message/protocol layer being built here (`AaProtocol`, `VersionRequest`/`Response`, and
+`SSL_HANDSHAKE` once built) is transport-agnostic and will be reused by whichever transport
+(USB or wireless) actually gets a working session first - aasdk itself shares this same layer
+between its `USBTransport` and `TCPTransport`. Nothing done on USB so far is wasted by this pivot.
