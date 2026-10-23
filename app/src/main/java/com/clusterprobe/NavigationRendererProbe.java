@@ -550,8 +550,6 @@ public class NavigationRendererProbe {
             } catch (Throwable t) {
                 log(status, "Cluster-info probe: getInstrumentClusterInfo() call failed: " + t);
             }
-        } catch (ClassNotFoundException e) {
-            log(status, "Cluster-info probe: android.car classes aren't present on this build: " + e);
         } catch (Throwable t) {
             log(status, "Cluster-info probe failed: " + t);
         }
