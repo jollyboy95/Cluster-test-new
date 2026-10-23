@@ -86,9 +86,174 @@ public class NavigationRendererProbe {
     private void doRun(Context context, StatusListener status) {
         appContext = context;
         log(status, "--- NavigationRenderer / cluster-renderer probe (read-only) ---");
+        probePermissionProtectionLevels(context, status);
         probeAvailableAndroidCarClasses(status);
+        probeAllCarManagers(context, status);
+        probeNavigationFocusOwner(context, status);
         probeInstrumentClusterInfo(context, status);
         probeBindToFactoryRenderer(context, status);
+    }
+
+    /**
+     * Cheap, read-only PackageManager lookups - no Car connection needed. Tells us the real
+     * protectionLevel of the two permissions this probe cares about, same approach as
+     * MainActivity's GET_DATA check, instead of relying on the AOSP source assumption in this
+     * file's own class comment.
+     */
+    private void probePermissionProtectionLevels(Context context, StatusListener status) {
+        logPermissionLevel(context, status, "android.car.permission.BIND_INSTRUMENT_CLUSTER_RENDERER_SERVICE");
+        logPermissionLevel(context, status, "android.car.permission.CAR_NAVIGATION_MANAGER");
+    }
+
+    private void logPermissionLevel(Context context, StatusListener status, String permissionName) {
+        try {
+            android.content.pm.PermissionInfo info = context.getPackageManager().getPermissionInfo(permissionName, 0);
+            log(status, "Permission level: " + permissionName + " protectionLevel=0x"
+                    + Integer.toHexString(info.protectionLevel) + " (" + decodeProtectionLevel(info.protectionLevel) + ")"
+                    + (info.packageName != null ? "  declared by " + info.packageName : ""));
+        } catch (android.content.pm.PackageManager.NameNotFoundException e) {
+            log(status, "Permission level: " + permissionName + " isn't registered on this device at all.");
+        } catch (Throwable t) {
+            log(status, "Permission level: couldn't read " + permissionName + ": " + shortCause(t));
+        }
+    }
+
+    /** Same base-encoding table as MainActivity.decodeProtectionLevel - duplicated locally so
+     *  this class has no dependency on MainActivity for a standalone diagnostic. */
+    private static String decodeProtectionLevel(int level) {
+        int base = level & 0xf;
+        String baseStr;
+        switch (base) {
+            case 0: baseStr = "normal"; break;
+            case 1: baseStr = "dangerous"; break;
+            case 2: baseStr = "signature"; break;
+            case 3: baseStr = "signatureOrSystem"; break;
+            default: baseStr = "unknown base " + base; break;
+        }
+        int flags = level & ~0xf;
+        return flags == 0 ? baseStr : baseStr + " + extra flags 0x" + Integer.toHexString(flags);
+    }
+
+    /**
+     * Beyond just printing the *_SERVICE string constants (which probeAvailableAndroidCarClasses
+     * already does), this actually CALLS Car.getCarManager(...) for every one found and reports
+     * which ones a normal app can actually obtain a manager for - the real, on-car answer to
+     * "what part of android.car is reachable here" rather than just what's declared.
+     */
+    private void probeAllCarManagers(Context context, StatusListener status) {
+        Object localCar = null;
+        try {
+            Class<?> carClass = Class.forName("android.car.Car");
+            localCar = tryCreateCar(carClass, context, status);
+            if (localCar == null) {
+                log(status, "All-managers sweep: no Car instance available, skipping.");
+                return;
+            }
+            Method getCarManager = carClass.getMethod("getCarManager", String.class);
+
+            List<String> serviceNames = new ArrayList<>();
+            for (Field f : carClass.getFields()) {
+                if (f.getType() != String.class || !Modifier.isStatic(f.getModifiers())) continue;
+                if (!f.getName().endsWith("_SERVICE")) continue;
+                try {
+                    Object v = f.get(null);
+                    if (v instanceof String) serviceNames.add((String) v);
+                } catch (Throwable ignored) {
+                }
+            }
+            log(status, "All-managers sweep: trying getCarManager() for " + serviceNames.size()
+                    + " declared service constants...");
+            for (String name : serviceNames) {
+                try {
+                    Object mgr = getCarManager.invoke(localCar, name);
+                    log(status, mgr != null
+                            ? ("All-managers sweep: \"" + name + "\" -> " + mgr.getClass().getName())
+                            : ("All-managers sweep: \"" + name + "\" -> null"));
+                } catch (Throwable t) {
+                    Throwable cause = (t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null)
+                            ? t.getCause() : t;
+                    log(status, "All-managers sweep: \"" + name + "\" -> denied/failed: " + shortCause(cause));
+                }
+            }
+        } catch (Throwable t) {
+            log(status, "All-managers sweep failed: " + shortCause(t));
+        } finally {
+            disconnectQuietly(localCar);
+        }
+    }
+
+    /**
+     * android.car.CarAppFocusManager is the STANDARD AAOS way to ask "which app currently owns
+     * navigation focus" - a much more precise answer than guessing from running processes. Ties
+     * directly to docs/H7_DISPLAY_ARCHITECTURE.md's addendum on the AA/CarPlay "borrow"
+     * mechanism: whichever package owns APP_FOCUS_TYPE_NAVIGATION at probe time is the one
+     * actually feeding guidance data right now.
+     */
+    private void probeNavigationFocusOwner(Context context, StatusListener status) {
+        Object localCar = null;
+        try {
+            Class<?> carClass = Class.forName("android.car.Car");
+            localCar = tryCreateCar(carClass, context, status);
+            if (localCar == null) {
+                log(status, "Nav-focus-owner probe: no Car instance available, skipping.");
+                return;
+            }
+            String appFocusService = null;
+            try {
+                Object v = carClass.getField("APP_FOCUS_SERVICE").get(null);
+                if (v instanceof String) appFocusService = (String) v;
+            } catch (Throwable ignored) {
+            }
+            if (appFocusService == null) {
+                log(status, "Nav-focus-owner probe: no APP_FOCUS_SERVICE constant on this build's android.car.Car - skipping.");
+                return;
+            }
+            Method getCarManager = carClass.getMethod("getCarManager", String.class);
+            Object focusMgr = getCarManager.invoke(localCar, appFocusService);
+            if (focusMgr == null) {
+                log(status, "Nav-focus-owner probe: getCarManager(APP_FOCUS_SERVICE) returned null.");
+                return;
+            }
+            log(status, "Nav-focus-owner probe: obtained " + focusMgr.getClass().getName()
+                    + ". Methods: " + summarizeMethods(listMethodNames(focusMgr.getClass())));
+
+            Method owner = null;
+            for (Method m : focusMgr.getClass().getMethods()) {
+                if (m.getName().equals("getAppTypeOwner") && m.getParameterTypes().length == 1
+                        && m.getParameterTypes()[0] == int.class) {
+                    owner = m;
+                    break;
+                }
+            }
+            if (owner == null) {
+                log(status, "Nav-focus-owner probe: no getAppTypeOwner(int) method on this build's "
+                        + "manager - can't identify the current navigation-focus owner this way.");
+                return;
+            }
+            int navType = 1; // CarAppFocusManager.APP_FOCUS_TYPE_NAVIGATION's documented value
+            try {
+                Object v = focusMgr.getClass().getField("APP_FOCUS_TYPE_NAVIGATION").get(null);
+                if (v instanceof Integer) navType = (Integer) v;
+            } catch (Throwable ignored) {
+            }
+            Object result = owner.invoke(focusMgr, navType);
+            log(status, "Nav-focus-owner probe: getAppTypeOwner(APP_FOCUS_TYPE_NAVIGATION=" + navType
+                    + ") = " + result + " (note which protocol/app is active when you read this - "
+                    + "see docs/H7_DISPLAY_ARCHITECTURE.md section 10 on the AA/CarPlay borrow mechanism).");
+        } catch (Throwable t) {
+            log(status, "Nav-focus-owner probe failed: " + shortCause(t));
+        } finally {
+            disconnectQuietly(localCar);
+        }
+    }
+
+    private void disconnectQuietly(Object localCar) {
+        if (localCar == null) return;
+        try {
+            Method d = localCar.getClass().getMethod("disconnect");
+            d.invoke(localCar);
+        } catch (Throwable ignored) {
+        }
     }
 
     /**
