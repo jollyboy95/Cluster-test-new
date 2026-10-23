@@ -1027,3 +1027,51 @@ is the one piece that cannot be worked around by reading source or inspecting a 
 Android Auto remains the right near-term target: its equivalent "shared secret" (the fixed TLS
 client cert/key already vendored into this project from aasdk) is public and intentionally shared
 across every open-source head unit, with no equivalent per-vendor licensing gate.
+
+## v0.36 addendum 3: AV_MEDIA_ACK_INDICATION fix, and three more real-world cross-checks
+
+**Real bug found and fixed (not theoretical):** reading `mib-cluster-map-main` (a real, working
+VW MIB2 Harman cluster-mirroring project, GPL-3.0, examined for architecture only - its exact
+hooks are specific to VW's own QNX/Harman `gal` binary and are not portable to this project) turned
+up an explicit, hard-won lesson: a phone sending Android Auto video must be paced by acknowledging
+frames, or (at low credit limits) the stream stalls completely after exactly one frame; at higher
+credit limits it outruns the display and corrupts. Checking our own `AaSessionRunner` against this
+found exactly that bug: `AVChannelSetupResponse` already grants only `max_unacked=1`, but nothing
+ever sent `AVMediaAckIndication` back - so the very first real on-car test would likely have gotten
+one frame and then hung, which would have looked like a mysterious failure rather than a known,
+fixable protocol-pacing gap. Fixed: `AaControlMessages.buildAvMediaAckIndication()` + a
+`sendMediaAck()` call in `AaSessionRunner` after every consumed video frame. Stub-compiled clean,
+pushed, CI triggered.
+
+**Three more reference uploads, inspected the same way (black-box or architecture-only, nothing
+copied):**
+- **`Headunit_Reloaded_vV8.2_.0_Patched.apk`** and **`DiAuto-main`** (an AGPL-3.0 fork of
+  open-headunit, BYD-focused) both independently confirm Wi-Fi Direct as the real-world primary
+  wireless mechanism (DiAuto: "Automatic Wi-Fi Direct address recovery", "explicit Static BSSID
+  remains supported" as a fallback) and both call out frame pacing explicitly (DiAuto: "Bounded
+  SurfaceView frame pacing") - independent confirmation of the same fix just made above, from a
+  second, unrelated codebase.
+- **`DiPlay-0.2.21.apk`** (wireless CarPlay, inspected earlier this session) and **`DiAuto`** turn
+  out to be a known pair on BYD hardware - DiAuto's own `docs/BYD_NAVIGATION.md` describes both
+  apps independently sending BYD's "AutoNavi standard broadcast" to the vehicle's own stock
+  `ClusterDebug` receiver to put live turn-by-turn arrows and street names on BYD's windshield
+  HUD/cluster - **as a normal, non-rooted Android broadcast Intent to a vendor-shipped receiver,
+  running as the sending app's own ordinary UID, no signature bypass, no ADB.** This is a real
+  precedent (on different hardware, from a different OEM) for the pattern this project's own
+  `NavigationRendererProbe` has been reflection-scanning for: a cluster/HUD content path that is a
+  normal, documented-or-discoverable vehicle service API, entirely separate from (and nothing like)
+  the signature-protected `theme_config` interface this project will not touch. It does not mean
+  GWM/Haval has an equivalent - that still has to be found on this car specifically - but it
+  confirms this is the right shape of thing to keep looking for.
+- **`openautolink-main`** (GPL-3.0, github.com/mossyhub/openautolink) is a full modern AA+CarPlay
+  app with a dedicated instrument-cluster module (`com.openautolink.app.cluster.*`:
+  `ClusterManager`, `OalClusterService`, `ClusterNavigationState`, etc.) - genuinely the closest
+  existing reference to this project's own roadmap step 3. However, its cluster mechanism is built
+  entirely on Android Automotive OS's own `androidx.car.app` Car App Library (`CarAppActivity`,
+  `CarAppService` Templates Host binding) - a framework that exists only on genuine Google AAOS
+  vehicles (its own README targets GM AAOS specifically). This H7's head unit is plain embedded
+  Android 9 (Harman OS / NOBO IN9.0-OS), not AAOS, so that specific binding mechanism does not
+  apply here - this project's own plan (a dedicated Activity targeted directly at Display 2, no
+  Car App Library) remains the right approach for this hardware. Worth returning to as a reference
+  for *what data a cluster view needs* (its `ClusterNavigationState.kt`) once this project reaches
+  that phase, not for *how it's bound to the display*.
