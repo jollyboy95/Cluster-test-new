@@ -253,6 +253,11 @@ public final class AaWirelessBootstrapServer {
             public void onStopped() {
                 // no-op here; stop() path handles cleanup logging separately
             }
+
+            @Override
+            public void onDiagnostic(String msg) {
+                log(status, "Hotspot diagnostic: " + msg);
+            }
         });
         try {
             if (!latch.await(10, java.util.concurrent.TimeUnit.SECONDS)) {

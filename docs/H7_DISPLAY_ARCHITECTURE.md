@@ -757,3 +757,26 @@ project's standing rule, this is not described as working wireless AA - only as 
 implementation of the bootstrap handshake, awaiting its first real test: phone already paired over
 Bluetooth, master toggle ON, location permission granted, then "Run wireless AA bootstrap" pressed
 while the phone's Android Auto app is told to connect wirelessly.
+
+## v0.33: wireless bootstrap first on-car result - hotspot refused, ERROR_INCOMPATIBLE_MODE
+
+First real on-car test of v0.32's wireless bootstrap: `WifiManager.startLocalOnlyHotspot()`
+immediately failed with `LocalOnlyHotspotCallback.onFailed reason=3`
+(`ERROR_INCOMPATIBLE_MODE`), before anything Bluetooth-related even started.
+
+`ERROR_INCOMPATIBLE_MODE` is AOSP's own code for "Wi-Fi's current mode/state won't allow a local
+AP to start." On ordinary phones this is rare; on automotive Wi-Fi chipsets/OEM builds it's a
+known class of problem - either no supported STA+AP concurrency (can't run client mode and AP
+mode at once), or the vendor disabled softAP capability outright for the public API. This device's
+own evidence points at the latter: the earlier static analysis of DiPlay (the factory-adjacent AA
+app) found a native library called `liblocal_hotspot_radio.so` - GWM apparently built their own
+private hotspot mechanism rather than calling `WifiManager.startLocalOnlyHotspot()` the normal way,
+which is consistent with that public API simply not working on this hardware/build at all.
+
+Added `decodeHotspotFailureReason()` (`AaWirelessHotspot.java`) to turn any future reason code into
+a readable explanation instead of a bare number, and a non-terminal `Listener.onDiagnostic()`
+callback that logs the actual pre-attempt Wi-Fi state (enabled? already STA-connected? to what
+SSID?) - separate from `onFailed()` so it can never short-circuit the hotspot-start flow itself.
+Both ship disabled-by-default, same as everything else in this path - diagnostic improvements only,
+no behavioural change to what's attempted yet, pending the next on-car run's diagnostic output and
+a decision on how to proceed (see below).

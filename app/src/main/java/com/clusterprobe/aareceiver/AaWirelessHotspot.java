@@ -26,6 +26,9 @@ public final class AaWirelessHotspot {
         void onStarted(String ssid, String passphrase, String bssid);
         void onFailed(String reason);
         void onStopped();
+        /** Informational only - never terminal, unlike onFailed(). Default no-op so existing
+         *  callers don't need updating. */
+        default void onDiagnostic(String msg) {}
     }
 
     private WifiManager.LocalOnlyHotspotReservation reservation;
@@ -45,6 +48,21 @@ public final class AaWirelessHotspot {
         if (wifiManager == null) {
             listener.onFailed("WifiManager unavailable");
             return;
+        }
+        // Diagnostic only (doesn't change what's attempted or gate it) - reported via
+        // onDiagnostic(), never onFailed(), so it can't short-circuit the caller's latch/flow.
+        // 2026-10-23 on-car result: onFailed reason=3 (ERROR_INCOMPATIBLE_MODE) - this exists to
+        // narrow down why on the next run, by showing the actual pre-existing Wi-Fi state rather
+        // than guessing at it blind.
+        try {
+            boolean wifiEnabled = wifiManager.isWifiEnabled();
+            android.net.wifi.WifiInfo info = wifiManager.getConnectionInfo();
+            boolean connected = info != null && info.getNetworkId() != -1;
+            listener.onDiagnostic("pre-start Wi-Fi state: wifiEnabled=" + wifiEnabled
+                    + " staConnected=" + connected
+                    + (connected && info != null ? " ssid=" + info.getSSID() : ""));
+        } catch (Throwable t) {
+            listener.onDiagnostic("pre-start Wi-Fi state check threw: " + t);
         }
         Handler mainHandler = new Handler(Looper.getMainLooper());
         wifiManager.startLocalOnlyHotspot(new WifiManager.LocalOnlyHotspotCallback() {
@@ -86,9 +104,30 @@ public final class AaWirelessHotspot {
                     running = false;
                     reservation = null;
                 }
-                listener.onFailed("LocalOnlyHotspotCallback.onFailed reason=" + reason);
+                listener.onFailed("LocalOnlyHotspotCallback.onFailed reason=" + reason
+                        + " (" + decodeHotspotFailureReason(reason) + ")");
             }
         }, mainHandler);
+    }
+
+    /** AOSP WifiManager.LocalOnlyHotspotCallback constants (ERROR_NO_CHANNEL=1, ERROR_GENERIC=2,
+     *  ERROR_INCOMPATIBLE_MODE=3, ERROR_TETHERING_DISALLOWED=4). reason=3 was the real on-car
+     *  result on 2026-10-23 - ERROR_INCOMPATIBLE_MODE means the platform refused to start a local
+     *  AP given Wi-Fi's current mode/state, which on a lot of automotive Wi-Fi chipsets/OEM builds
+     *  means no supported STA+AP concurrency (or AP mode disabled outright by the vendor) - this
+     *  head unit's own liblocal_hotspot_radio.so (found during the earlier DiPlay static analysis)
+     *  is itself evidence GWM built a private hotspot path instead of using this public API, which
+     *  would be consistent with that API not working here at all. */
+    private static String decodeHotspotFailureReason(int reason) {
+        switch (reason) {
+            case 1: return "ERROR_NO_CHANNEL";
+            case 2: return "ERROR_GENERIC";
+            case 3: return "ERROR_INCOMPATIBLE_MODE - Wi-Fi's current mode/state is incompatible "
+                    + "with hosting a local AP; common on automotive Wi-Fi chipsets/OEM builds "
+                    + "without STA+AP concurrency, or where AP mode is vendor-disabled";
+            case 4: return "ERROR_TETHERING_DISALLOWED";
+            default: return "unknown reason code";
+        }
     }
 
     public synchronized void stop() {
