@@ -984,3 +984,46 @@ is the next thing worth finishing, not the hotspot path - this patched app's own
 agrees.
 
 No code was changed in this addendum - documentation only.
+
+## v0.36 addendum 2: DiPlay (wireless CarPlay) confirms CarPlay stays parked, now for a concrete reason
+
+User supplied `DiPlay-0.2.21.apk` - a commercial CarPlay app ("shilapi.xcertplay") confirmed by the
+user to work wirelessly with their work iPhone on this exact head unit. Inspected the same way as
+the Headunit Reloaded APK above: packaging/dex strings only, as a black box - nothing decompiled
+or transcribed, and this is a closed-source commercial app, not an open-source reference, so the
+"read as spec only" rule applies even more strictly here than for aasdk/OpenAuto/headunit-borconi.
+
+**What the strings show, at a protocol-choreography level (all public, documented CarPlay-wireless
+knowledge - Bonjour/USBMUX/AirPlay/iAP2 - nothing new or secret in this part):** DiPlay tunnels
+Apple's `usbmux`/`iAP2` accessory protocol over a TCP connection, negotiated and transported via an
+AirPlay-style session (RTSP-like SETUP exchange, SRP6a key exchange, Bonjour/mDNS discovery) -
+this is the standard, publicly-documented shape of wireless CarPlay used by every third-party
+implementation. It also uses `WifiP2pManager` (same API this project already uses for Android
+Auto) with its own hotspot-vs-P2P fallback tension (`wifi_direct_refused_beside_hotspot`),
+consistent with what the Headunit Reloaded APK showed for Android Auto - this head unit's Wi-Fi
+stack imposes the same restriction across both protocols, not something specific to either app.
+
+**Why this doesn't reopen CarPlay as a buildable target:** every wireless CarPlay session has to
+pass Apple's MFi ("Made for iPhone") authentication challenge before the phone will stream
+anything - confirmed directly in these strings (`iap2 mfi rx=0xaa02 challenge`, `iap2 mfi tx=0xaa03
+signature`). DiPlay satisfies that challenge through a **licensed MFi credential**, via one of two
+backends it supports: a physical MFi authentication IC reachable over I2C (`libxcertplay_i2c.so`,
+alongside a `CH341` USB-serial/I2C bridge) or a remote signing server operated by its vendor
+(`/mfi/sign`, `mfi discovery backend=Remote server=`). The APK also bundles an offline fallback
+credential at `assets/offline-mfi/identity.pk8` + `certificate.p7b`.
+
+That credential is the vendor's own Apple-licensed MFi secret, not something this project has or
+is entitled to use - extracting or repurposing it would be exactly the kind of signature/licensing
+bypass this project's standing boundaries already rule out for the car's own protected systems,
+except here it would also be taking a third party's licensed IP rather than the user's own
+property. **No part of that credential was extracted, decoded, or examined beyond confirming its
+file names/sizes exist**, and none of this project's code will attempt to use it.
+
+**Conclusion: CarPlay stays parked - now because the real blocker is confirmed (a licensed MFi
+identity this project has no legitimate way to obtain), not because of a missing protocol
+investigation.** Everything else about wireless CarPlay's choreography (AirPlay/Bonjour/USBMUX) is
+realistically reimplementable from public knowledge the same way Android Auto's protocol was - MFi
+is the one piece that cannot be worked around by reading source or inspecting a binary, by design.
+Android Auto remains the right near-term target: its equivalent "shared secret" (the fixed TLS
+client cert/key already vendored into this project from aasdk) is public and intentionally shared
+across every open-source head unit, with no equivalent per-vendor licensing gate.
