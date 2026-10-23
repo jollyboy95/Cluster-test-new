@@ -26,6 +26,18 @@ public final class AaSessionRunner {
 
     public static final int VIDEO_CHANNEL_ID = 3;
 
+    /**
+     * v0.43: found via real on-car evidence - every single reconnect attempt in the logs stalled
+     * silently forever right after "sending VersionRequest...", with no error, no timeout, no
+     * onSessionEnded ever firing. Root cause: Socket.setSoTimeout() was never called, so
+     * AaProtocol.readFrame()'s blocking InputStream.read() loop (readExactlyStream) waits
+     * indefinitely with no way to distinguish "still working" from "truly stuck". This bounds
+     * every blocking read on the control/video channel to a fixed timeout, turning a silent
+     * infinite hang into a clear, reported SocketTimeoutException the user can actually see in
+     * the main-screen log (see the catch block below and v0.42's dual-logging).
+     */
+    private static final int SOCKET_READ_TIMEOUT_MS = 8000;
+
     public interface Listener {
         void onStatus(String msg);
         /** h264 is the raw Annex-B bytes for one AV media indication (SPS/PPS/IDR/slice NALs as
@@ -36,9 +48,15 @@ public final class AaSessionRunner {
     }
 
     private volatile boolean stopRequested = false;
+    private volatile Socket activeSocket;
 
     public void run(Socket socket, Listener listener) {
+        activeSocket = socket;
         try {
+            // v0.43: see SOCKET_READ_TIMEOUT_MS doc comment above - without this, a
+            // non-responding phone hangs every read on this socket forever with zero feedback.
+            socket.setSoTimeout(SOCKET_READ_TIMEOUT_MS);
+
             InputStream in = socket.getInputStream();
             OutputStream out = socket.getOutputStream();
 
@@ -85,13 +103,31 @@ public final class AaSessionRunner {
             listener.onStatus("Session: waiting for the phone to open the video channel...");
             runReceiveLoop(in, out, tls, listener);
 
+        } catch (java.net.SocketTimeoutException e) {
+            // v0.43: now a clear, bounded, reportable failure instead of a silent infinite hang -
+            // see SOCKET_READ_TIMEOUT_MS's doc comment. This specific message means: the phone
+            // accepted the TCP connection (and may even show "Android Auto available" on its own
+            // screen) but never sent back a reply to whatever we were last waiting on.
+            listener.onSessionEnded("No reply from the phone within " + SOCKET_READ_TIMEOUT_MS
+                    + "ms (SocketTimeoutException) - the TCP connection is open but the phone "
+                    + "isn't answering the Android Auto protocol handshake.");
         } catch (Exception e) {
             listener.onSessionEnded("Session failed: " + e);
+        } finally {
+            activeSocket = null;
         }
     }
 
     public void stop() {
         stopRequested = true;
+        // v0.43: stopRequested alone never unblocked a thread parked inside a blocking
+        // InputStream.read() with no timeout (readExactlyStream/readFrame) - every "stop" before
+        // this just leaked that thread, still blocked forever, while a fresh connect started a new
+        // one. Closing the socket here forces any pending read to throw and actually return.
+        Socket s = activeSocket;
+        if (s != null) {
+            try { s.close(); } catch (java.io.IOException ignored) { }
+        }
     }
 
     private void runReceiveLoop(InputStream in, OutputStream out, AaTlsSession tls, Listener listener)

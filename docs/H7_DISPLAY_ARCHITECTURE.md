@@ -1431,3 +1431,68 @@ opened" / "AVChannelSetupRequest" / "video START_INDICATION received" (the furth
 project's receiver has ever logged reaching) or stalls at an earlier step will now be directly
 readable there, settling whether this is a genuine protocol stall or just needed more time/a
 phone-side prompt.
+
+## v0.43: found the real stall - no socket read timeout, and stop() couldn't unblock it
+
+v0.42's fix did exactly its job: the next on-car test (5+ reconnect attempts, all logged on the
+main screen this time, not just inferred from one overwriting cluster-screen line) showed the
+*same* point every single time:
+
+```
+Connected: ... - plain TCP session open. Handing off to the real session pipeline...
+launchOnClusterDisplay is ON - hosting the session in an overlay window on the cluster display...
+Session: sending VersionRequest...
+AA session overlay added on the cluster display.
+```
+
+...and then nothing. No `Session: VersionResponse ...` line, ever, across every attempt. The phone
+itself shows "Android Auto available" (so it does recognize the TCP connection at some level), but
+the actual AA protocol handshake never progresses past our own first message.
+
+**Root cause, found by reading `AaProtocol.java` and `AaSessionRunner.java` end to end:**
+
+1. `Socket.setSoTimeout()` was never called anywhere in this path. Java sockets default to an
+   infinite read timeout (`SO_TIMEOUT = 0`). `AaProtocol.readFrame()` → `readExactlyStream()` is a
+   plain blocking `InputStream.read()` loop with no timeout logic of its own - so if the phone
+   simply never writes a reply, the read blocks forever. No exception, no `onSessionEnded` call,
+   nothing - total silence, indistinguishable in the logs from "still working, just slow."
+
+2. `AaSessionRunner.stop()` only ever set a `stopRequested` flag, which is checked between
+   `readFrame()` calls in the main receive loop - but does nothing to interrupt a read that's
+   *already* blocked inside `readFrame()` (exactly the situation here, hung on the very first
+   read). So every "reconnect" in the log was actually leaving the previous attempt's thread still
+   parked forever on that first blocking read, while a brand new socket/thread started fresh - the
+   identical-looking stall on every attempt wasn't 5 independent repeats of bad luck, it may well
+   have been the same original stuck read plus 4 more piling up behind it, never cleaned up.
+
+**Fix:**
+- `AaSessionRunner.run()` now calls `socket.setSoTimeout(SOCKET_READ_TIMEOUT_MS)` (8000ms) right
+  after getting the socket's streams, before sending `VersionRequest`. Every blocking read on this
+  socket for the rest of the session (control and video channel alike) is now bounded.
+- A new `catch (SocketTimeoutException e)` block reports a specific, readable message instead of
+  the generic `"Session failed: " + e"` catch-all: *"No reply from the phone within 8000ms
+  (SocketTimeoutException) - the TCP connection is open but the phone isn't answering the Android
+  Auto protocol handshake."* This is exactly the diagnostic signal that was missing - the next
+  on-car test will now report a clean, bounded failure within 8 seconds instead of indefinite
+  silence, or (if the real issue is just that it needed longer than expected) a `VersionResponse`
+  line actually appearing.
+- `AaSessionRunner` now keeps a reference to the active `Socket` and `stop()` closes it. Closing a
+  socket forces any thread currently blocked in a read on it to throw `IOException` immediately,
+  so a stopped session's thread no longer leaks forever - it unblocks, hits the catch block, calls
+  `onSessionEnded`, and actually exits.
+
+**What this does and doesn't tell us yet:** this does not by itself explain *why* the phone never
+replies to `VersionRequest` - that's still an open question (possible causes: a framing/encoding
+mismatch specific to this wireless manual-IP transport vs. the aasdk reference spec, a
+phone-side/Android-Auto-app quirk, or it may simply be that 8 seconds genuinely wasn't long enough
+and a real reply would have arrived at 9 or 10). What it does do is turn an untestable infinite
+silent hang into a bounded, clearly-reported result either way - which is the prerequisite for
+actually diagnosing the real cause rather than guessing at it from a frozen cluster photo.
+
+**Verification done before pushing:** stub-compiled `AaSessionRunner.java` (the only file changed)
+in the project's harness alongside everything from v0.36-v0.42, clean, no errors.
+
+**Status: not yet re-tested on-car with this fix.** Next connect attempt should either show
+`Session: VersionResponse ...` (meaning it just needed more time than one blocking read without a
+timeout implied) or the new, specific `SocketTimeoutException` message within ~8 seconds of
+"sending VersionRequest..." - either result is real progress over today's silent, indefinite hang.
