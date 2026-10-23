@@ -944,3 +944,43 @@ by this app yet. The next real test is the user connecting a phone via the v0.34
 (enabling "Start head unit server" in the phone's Android Auto developer settings) and watching
 whether `AndroidAutoSessionActivity` actually opens and reaches "FIRST VIDEO FRAME DECODED" - that
 status string is the actual bar for "Android Auto is visible," not CI passing.
+
+## v0.36 addendum: real confirmation from a known-working app on this exact head unit
+
+User supplied `Headunit_Reloaded_vV8.2_.0_Patched.apk` - a confirmed-working app ("used this on my
+headunit with no issues") - not the old AGPLv3 `headunit-borconi` Java source inspected for v0.34/
+v0.35 (different codebase entirely: this APK is a modern Kotlin/Compose app with native `libusb`
+and a small native helper lib, `libhur.so`). Per this project's "read as spec only" rule, this was
+inspected as a compiled black box (manifest/dex strings only, via `unzip`+`strings` - no
+decompilation of logic, nothing transcribed) purely to confirm real-world behavior on this exact
+car, not to source code from it.
+
+**What the strings confirm, in priority order the app itself appears to use:**
+1. **Wi-Fi Direct (`WifiP2pManager`) is the primary/preferred mechanism** - the same API this
+   project's v0.35 `AaWirelessDirectProbe` exercises, using the same real UUID
+   (`4de17a00-52cb-11e6-bdf4-0800200c9a66`) and the same `192.168.49.1` group-owner address this
+   project already found and used.
+2. **`LocalOnlyHotspot` is an explicit fallback, not the primary path** - string
+   `"WiFi-P2P failed - falling back to LocalOnlyHotspot (video will cap to 720p)"`. This is the
+   mechanism that failed on-car in v0.33 with `ERROR_INCOMPATIBLE_MODE` - this app treats that
+   exact failure as expected/recoverable, not fatal, and still has a usable path when it happens.
+3. **A third, separate path strings as `"(>=17.4) - using developer Head-unit server path"`** -
+   confirms, independently of open-headunit's README, that this app detects a modern phone-side AA
+   version and switches to the same manual-IP "Head-unit server" / Developer Mode mechanism this
+   project wired up in v0.34/v0.36 (`AaWirelessManualConnect` -> `AndroidAutoSessionActivity`).
+4. A fourth internal mode strings as `"Phone mode: connected to Head-unit server on
+   127.0.0.1:5277"` - the loopback/"Self Mode" case (same device acting as both head unit and
+   phone, via Gearhead's own companion service) - not relevant to this project's two-device setup.
+
+**Why this matters for what to test next, in order:** this is now real, independent confirmation
+(not just inference from reference source) that this exact Haval H7 Vanta's Wi-Fi chipset refuses
+`LocalOnlyHotspot` (matches v0.33's `ERROR_INCOMPATIBLE_MODE` exactly) but that a working app on
+this same hardware still gets a connection - meaning either Wi-Fi Direct or the manual-IP
+Head-unit-server path (or both) does work here. Testing priority stays as already wired: try the
+manual-IP path first (`AaWirelessManualConnect`, already fully wired through to a rendered frame
+as of this version) since it needs no car-side Wi-Fi hosting capability at all; if that's blocked
+by the phone's own AA version, Wi-Fi Direct (v0.35's probe, not yet wired to the session pipeline)
+is the next thing worth finishing, not the hotspot path - this patched app's own fallback order
+agrees.
+
+No code was changed in this addendum - documentation only.
