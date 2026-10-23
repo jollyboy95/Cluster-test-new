@@ -58,16 +58,57 @@ public final class AaWirelessBootstrapServer {
     private ServerSocket tcpServerSocket;
     private final AaWirelessHotspot hotspot = new AaWirelessHotspot();
 
+    /**
+     * v0.45: "auto connect" - found a real need for this on-car, the hard way. The phone's own
+     * Android Auto Wireless trigger doesn't wait around: it can pop up its "start Android Auto?"
+     * prompt the moment it sees our RFCOMM service advertised (confirmed on-car - see the v0.44
+     * session notes), but by the time a person has re-armed this bootstrap by hand (tap Run, wait
+     * for the hotspot/RFCOMM listener to come up, THEN watch the phone) the window may already be
+     * gone, or the user simply isn't looking at the right moment while driving. When this is on,
+     * the background thread below just keeps re-arming itself automatically after every attempt
+     * (success, failure, or a fresh hotspot/RFCOMM listener either way) instead of going idle, so
+     * the service is listening again within a few seconds of any attempt ending - maximizing the
+     * chance of actually being armed at the exact moment the phone decides to offer the connection.
+     * Off by default, same convention as every other experimental switch here. The Stop button
+     * always clears this too, so "Stop" really means stop, not "pause until the next auto-retry".
+     */
+    private static volatile boolean autoRetry = false;
+    private static final long AUTO_RETRY_DELAY_MS = 4000;
+
+    public static void setAutoRetry(boolean enabled) {
+        autoRetry = enabled;
+    }
+
+    public static boolean isAutoRetryEnabled() {
+        return autoRetry;
+    }
+
     public static void run(Context context, AndroidAutoReceiver.StatusListener status) {
         stop();
-        instance = new AaWirelessBootstrapServer();
+        AaWirelessBootstrapServer inst = new AaWirelessBootstrapServer();
+        instance = inst;
         Context appCtx = context.getApplicationContext();
-        Thread t = new Thread(() -> instance.doRun(appCtx, status), "aa-wireless-bootstrap");
+        Thread t = new Thread(() -> {
+            while (true) {
+                inst.doRun(appCtx, status);
+                if (!autoRetry || inst.stopRequested) break;
+                inst.log(status, "Auto-connect: re-arming the wireless AA bootstrap in "
+                        + (AUTO_RETRY_DELAY_MS / 1000) + "s (new hotspot + RFCOMM listener)...");
+                try {
+                    Thread.sleep(AUTO_RETRY_DELAY_MS);
+                } catch (InterruptedException ie) {
+                    break;
+                }
+                if (!autoRetry || inst.stopRequested) break;
+                inst.stopRequested = false; // doRun() checks this field at several points - clear it for the next pass
+            }
+        }, "aa-wireless-bootstrap");
         t.setDaemon(true);
         t.start();
     }
 
     public static void stop() {
+        autoRetry = false; // Stop always means stop - never leaves an auto-retry loop pending.
         if (instance != null) {
             instance.stopRequested = true;
             instance.cleanup();

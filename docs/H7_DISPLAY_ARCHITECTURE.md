@@ -1533,3 +1533,43 @@ side completes), just not the end-to-end path this bootstrap is actually trying 
 field (`hs.passphrase`, same field already read on the line just above for
 `AaWirelessInfoResponse`) - no new symbols, syntactically trivial, verified by inspection rather
 than a fresh stub-compile pass.
+
+## v0.45: auto-connect - stop requiring a person to babysit the Run button
+
+Real on-car breakthrough this round: after forgetting and freshly re-pairing `HAVAL_9a5f` with
+ClusterProbe's RFCOMM bootstrap already advertising, the phone offered to start Android Auto on
+its own - almost certainly our own RFCOMM service being recognized for the first time, dressed up
+as the normal system "start Android Auto?" prompt (the phone doesn't visually distinguish which
+head unit app is on the other end of that offer). The user declined it, not realizing it was
+likely our own connection attempt rather than the factory stock integration.
+
+This exposed a real usability gap, not just a one-off mistake: the phone can offer the connection
+at any moment once it sees the Bluetooth service, but reaching that moment currently requires a
+person to tap Run, wait for the hotspot + RFCOMM listener to come up, and then be watching the
+phone at the right time - easy to miss, especially while driving, and the hotspot step itself has
+been seen to flake intermittently (`ERROR_INCOMPATIBLE_MODE`, `ERROR_GENERIC`) requiring a manual
+retry tap anyway.
+
+**Fix: "Auto-connect" toggle.** When on, `AaWirelessBootstrapServer`'s background thread no longer
+stops after one attempt - it loops, automatically re-arming (fresh hotspot, fresh RFCOMM listener)
+a few seconds after any attempt ends, whether that attempt failed, succeeded, or was interrupted.
+The Stop button always clears the auto-retry flag too, so Stop still means stop, not "pause until
+next retry". The blocking `accept()` call itself is untouched - while a listener is actively
+waiting for a phone connection, it's deliberately left alone rather than being bounced on a timer,
+since that's exactly the moment we don't want to interrupt.
+
+Practical effect: this can now just be left running (auto-connect ON, bootstrap started) and will
+keep presenting a fresh connection opportunity to the phone every ~4 seconds between attempts,
+without needing anyone to keep tapping buttons - so the next time the phone's own prompt appears,
+there's no need to have caught it the instant it showed up, and accepting it (not declining) is
+the one action actually needed.
+
+**Verification done before pushing:** reviewed by inspection (small, additive change to an
+existing, already-verified control-flow loop; no new external API surface) rather than a fresh
+stub-compile pass - the only new symbols are a boolean field/two static accessor methods and a
+`Button` toggle following the exact pattern already used by `toggleClusterLaunch` just below it in
+`MainActivity`.
+
+**Status: not yet tested on-car.** Next test: turn Auto-connect ON, tap Run, leave it alone, and
+when the phone offers to start Android Auto, press Start/Connect this time (not decline) and watch
+for "RFCOMM connected: ..." in the log.

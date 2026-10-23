@@ -236,6 +236,22 @@ public class MainActivity extends android.app.Activity {
             com.clusterprobe.aareceiver.AaWirelessBootstrapServer.stop();
             appendLog("Wireless AA bootstrap stopped (if it was running).");
         });
+        // v0.45: "auto connect" - on-car testing showed the phone can offer to connect the moment
+        // it sees our RFCOMM service, but a hand-restarted bootstrap (tap Run, wait for the
+        // hotspot/RFCOMM listener, watch the phone) can easily miss that window, especially while
+        // driving. When this is ON, every attempt that ends (hotspot failure, exchange failure, or
+        // success) automatically re-arms itself a few seconds later instead of going idle, so it
+        // keeps listening without needing a person to keep tapping Run. Off by default.
+        Button toggleAutoConnect = addButton(root, "Auto-connect: OFF", null);
+        toggleAutoConnect.setOnClickListener(v -> {
+            boolean enabling = !com.clusterprobe.aareceiver.AaWirelessBootstrapServer.isAutoRetryEnabled();
+            com.clusterprobe.aareceiver.AaWirelessBootstrapServer.setAutoRetry(enabling);
+            toggleAutoConnect.setText("Auto-connect: " + (enabling ? "ON" : "OFF"));
+            appendLog("Auto-connect " + (enabling
+                    ? "ON - the wireless AA bootstrap will keep re-arming itself automatically "
+                      + "after every attempt until Stop is pressed."
+                    : "OFF - back to manual (tap Run each time)."));
+        });
 
         addSection(root, "Wireless AA manual connect (experimental - OpenAuto-style, simpler)");
         addLabel(root, "Found by inspecting the real OpenAuto source: its own wireless mode is "
