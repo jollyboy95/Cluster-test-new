@@ -14,6 +14,8 @@ import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Read-only diagnostic for the "safe next step" from docs/H7_DISPLAY_ARCHITECTURE.md: does
@@ -88,21 +90,210 @@ public class NavigationRendererProbe {
         log(status, "--- NavigationRenderer / cluster-renderer probe (read-only) ---");
         probePermissionProtectionLevels(context, status);
         probeAvailableAndroidCarClasses(status);
-        probeAllCarManagers(context, status);
-        probeNavigationFocusOwner(context, status);
-        probeInstrumentClusterInfo(context, status);
+
+        // v0.22: the v0.21 run showed every getCarManager() call failing with
+        // "IllegalStateException: not connected" - that's not a permission result, it's this
+        // probe calling createCar(Context, ServiceConnection) with a null ServiceConnection and
+        // then using the Car object before any real connection could be established (this build
+        // only has the async two/three-arg overloads, no synchronous single-arg createCar).
+        // Fixed by connecting ONCE here, for real, with a real ServiceConnection and a bounded
+        // wait, then sharing that single connected Car instance across every check below -
+        // which also means only one connect/disconnect cycle instead of three.
+        Object car = null;
+        try {
+            Class<?> carClass = Class.forName("android.car.Car");
+            car = connectCarAndWait(carClass, context, status);
+            if (car == null) {
+                log(status, "Car-connect: could not establish a connected Car instance on this build - "
+                        + "skipping the manager-dependent checks below (all-managers sweep, cluster-manager "
+                        + "detail, nav-focus-owner, cluster-info). This is a real result in its own right, "
+                        + "not a stand-in for a permission denial.");
+            } else {
+                probeAllCarManagers(carClass, car, status);
+                probeClusterManagerDetail(carClass, car, status);
+                probeNavigationFocusOwner(carClass, car, status);
+                probeInstrumentClusterInfo(carClass, car, status);
+            }
+        } catch (Throwable t) {
+            log(status, "Car-connect: android.car.Car unavailable: " + shortCause(t));
+        } finally {
+            disconnectQuietly(car);
+        }
+
         probeBindToFactoryRenderer(context, status);
     }
 
     /**
      * Cheap, read-only PackageManager lookups - no Car connection needed. Tells us the real
-     * protectionLevel of the two permissions this probe cares about, same approach as
-     * MainActivity's GET_DATA check, instead of relying on the AOSP source assumption in this
-     * file's own class comment.
+     * protectionLevel of the permissions this probe cares about, same approach as MainActivity's
+     * GET_DATA check, instead of relying on an AOSP source assumption. v0.21 already corrected
+     * one assumption baked into this file's own original comment: CAR_NAVIGATION_MANAGER turned
+     * out to be signature-protected (0x12) on this build, not "normal". v0.22 adds
+     * CAR_INSTRUMENT_CLUSTER_CONTROL, which turned up in the service-constant scan and looks like
+     * it may be what actually gates CarInstrumentClusterManager (a distinct class from
+     * CarNavigationStatusManager, with its own registerCallback/startActivity methods - see
+     * probeClusterManagerDetail below), separate from the BIND_INSTRUMENT_CLUSTER_RENDERER_SERVICE
+     * permission that gates binding GWM's rendering service directly.
      */
     private void probePermissionProtectionLevels(Context context, StatusListener status) {
         logPermissionLevel(context, status, "android.car.permission.BIND_INSTRUMENT_CLUSTER_RENDERER_SERVICE");
         logPermissionLevel(context, status, "android.car.permission.CAR_NAVIGATION_MANAGER");
+        logPermissionLevel(context, status, "android.car.permission.CAR_INSTRUMENT_CLUSTER_CONTROL");
+    }
+
+    /**
+     * Establishes ONE real, connected android.car.Car instance, shared by every manager-dependent
+     * check in this probe, instead of each check creating (and mis-using) its own. Enumerates the
+     * real createCar(...) overloads on this build (confirmed: only (Context, ServiceConnection) and
+     * (Context, ServiceConnection, Handler), no synchronous single-arg form), passes a REAL
+     * ServiceConnection (not null), calls car.connect() if this build exposes that method
+     * explicitly, then waits up to 4s for onServiceConnected() before handing the Car back. If
+     * nothing connects within that window, returns null rather than a Car instance that will fail
+     * every subsequent call with "not connected".
+     */
+    private Object connectCarAndWait(Class<?> carClass, Context context, StatusListener status) {
+        List<Method> overloads = new ArrayList<>();
+        for (Method m : carClass.getMethods()) {
+            if (m.getName().equals("createCar") && Modifier.isStatic(m.getModifiers())) {
+                overloads.add(m);
+            }
+        }
+        if (overloads.isEmpty()) {
+            log(status, "Car-connect: android.car.Car has no createCar(...) overload at all on this build.");
+            return null;
+        }
+        StringBuilder found = new StringBuilder("Car-connect: createCar overloads on this build: ");
+        for (Method m : overloads) found.append(describeParams(m)).append("  ");
+        log(status, found.toString());
+
+        for (Method m : overloads) {
+            Class<?>[] paramTypes = m.getParameterTypes();
+            final CountDownLatch latch = new CountDownLatch(1);
+            final boolean[] connectedFlag = {false};
+            ServiceConnection waiter = new ServiceConnection() {
+                @Override
+                public void onServiceConnected(ComponentName name, IBinder binder) {
+                    connectedFlag[0] = true;
+                    latch.countDown();
+                }
+
+                @Override
+                public void onServiceDisconnected(ComponentName name) {
+                    latch.countDown();
+                }
+            };
+            try {
+                Object[] args = new Object[paramTypes.length];
+                for (int i = 0; i < paramTypes.length; i++) {
+                    args[i] = (paramTypes[i] == ServiceConnection.class) ? waiter : defaultArgFor(paramTypes[i], context);
+                }
+                Object car = m.invoke(null, args);
+                if (car == null) {
+                    log(status, "Car-connect: createCar" + describeParams(m) + " returned null, trying next overload...");
+                    continue;
+                }
+
+                try {
+                    Method connect = car.getClass().getMethod("connect");
+                    connect.invoke(car);
+                } catch (NoSuchMethodException ignored) {
+                    // No explicit connect() on this build - createCar(...) must auto-connect.
+                } catch (Throwable t) {
+                    Throwable cause = (t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null)
+                            ? t.getCause() : t;
+                    log(status, "Car-connect: car.connect() threw " + shortCause(cause)
+                            + " (may just mean it was already connecting).");
+                }
+
+                boolean waited;
+                try {
+                    waited = latch.await(4, TimeUnit.SECONDS);
+                } catch (InterruptedException ie) {
+                    waited = false;
+                }
+
+                boolean isConnected = connectedFlag[0];
+                try {
+                    Method isConn = car.getClass().getMethod("isConnected");
+                    Object v = isConn.invoke(car);
+                    if (v instanceof Boolean) isConnected = (Boolean) v;
+                } catch (Throwable ignored) {
+                }
+
+                log(status, "Car-connect: createCar" + describeParams(m) + " -> " + (isConnected
+                        ? "connected (onServiceConnected fired)."
+                        : (waited ? "onServiceDisconnected fired before ever connecting."
+                                : "timed out after 4s waiting for onServiceConnected - treating as not connected.")));
+
+                if (isConnected) return car;
+                disconnectQuietly(car);
+            } catch (Throwable t) {
+                Throwable cause = (t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null)
+                        ? t.getCause() : t;
+                log(status, "Car-connect: createCar" + describeParams(m) + " threw " + shortCause(cause)
+                        + ", trying next overload...");
+            }
+        }
+        return null;
+    }
+
+    /**
+     * android.car.cluster.CarInstrumentClusterManager (service name CAR_INSTRUMENT_CLUSTER_SERVICE,
+     * confirmed as "cluster_service" on this build) is a DIFFERENT class from
+     * CarNavigationStatusManager, with its own registerCallback/unregisterCallback/startActivity
+     * methods (confirmed present via probeAvailableAndroidCarClasses). startActivity in particular
+     * is a standard AAOS entry point for launching an Activity ONTO the instrument cluster display
+     * through the car service, rather than binding GWM's rendering service directly - a
+     * meaningfully different, less-privileged path than the one probeBindToFactoryRenderer already
+     * confirmed denied. This logs the real, FULL method signatures (parameter types, not just
+     * names) for those three methods once a genuinely connected Car is available, so if
+     * getCarManager() succeeds here we know exactly what to call next; if it's denied, that denial
+     * is now a trustworthy result because the Car is actually connected.
+     */
+    private void probeClusterManagerDetail(Class<?> carClass, Object car, StatusListener status) {
+        try {
+            String serviceName = null;
+            try {
+                Object v = carClass.getField("CAR_INSTRUMENT_CLUSTER_SERVICE").get(null);
+                if (v instanceof String) serviceName = (String) v;
+            } catch (Throwable ignored) {
+            }
+            if (serviceName == null) {
+                log(status, "Cluster-manager detail: no CAR_INSTRUMENT_CLUSTER_SERVICE constant on this build - skipping.");
+                return;
+            }
+            Method getCarManager = carClass.getMethod("getCarManager", String.class);
+            Object mgr;
+            try {
+                mgr = getCarManager.invoke(car, serviceName);
+            } catch (Throwable t) {
+                Throwable cause = (t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null)
+                        ? t.getCause() : t;
+                log(status, "Cluster-manager detail: getCarManager(\"" + serviceName + "\") -> denied/failed: "
+                        + shortCause(cause) + "  (Car was genuinely connected at this point, so this is a real "
+                        + "permission result, not a timing artifact.)");
+                return;
+            }
+            if (mgr == null) {
+                log(status, "Cluster-manager detail: getCarManager(\"" + serviceName + "\") returned null.");
+                return;
+            }
+            log(status, "Cluster-manager detail: obtained " + mgr.getClass().getName()
+                    + " for real, while genuinely connected.");
+            for (Method m : mgr.getClass().getMethods()) {
+                String n = m.getName();
+                if (n.equals("registerCallback") || n.equals("unregisterCallback") || n.equals("startActivity")) {
+                    StringBuilder params = new StringBuilder();
+                    for (Class<?> p : m.getParameterTypes()) {
+                        if (params.length() > 0) params.append(", ");
+                        params.append(p.getName());
+                    }
+                    log(status, "Cluster-manager detail: " + n + "(" + params + ")");
+                }
+            }
+        } catch (Throwable t) {
+            log(status, "Cluster-manager detail failed: " + shortCause(t));
+        }
     }
 
     private void logPermissionLevel(Context context, StatusListener status, String permissionName) {
@@ -140,15 +331,8 @@ public class NavigationRendererProbe {
      * which ones a normal app can actually obtain a manager for - the real, on-car answer to
      * "what part of android.car is reachable here" rather than just what's declared.
      */
-    private void probeAllCarManagers(Context context, StatusListener status) {
-        Object localCar = null;
+    private void probeAllCarManagers(Class<?> carClass, Object car, StatusListener status) {
         try {
-            Class<?> carClass = Class.forName("android.car.Car");
-            localCar = tryCreateCar(carClass, context, status);
-            if (localCar == null) {
-                log(status, "All-managers sweep: no Car instance available, skipping.");
-                return;
-            }
             Method getCarManager = carClass.getMethod("getCarManager", String.class);
 
             List<String> serviceNames = new ArrayList<>();
@@ -162,10 +346,10 @@ public class NavigationRendererProbe {
                 }
             }
             log(status, "All-managers sweep: trying getCarManager() for " + serviceNames.size()
-                    + " declared service constants...");
+                    + " declared service constants (Car is genuinely connected now)...");
             for (String name : serviceNames) {
                 try {
-                    Object mgr = getCarManager.invoke(localCar, name);
+                    Object mgr = getCarManager.invoke(car, name);
                     log(status, mgr != null
                             ? ("All-managers sweep: \"" + name + "\" -> " + mgr.getClass().getName())
                             : ("All-managers sweep: \"" + name + "\" -> null"));
@@ -177,8 +361,6 @@ public class NavigationRendererProbe {
             }
         } catch (Throwable t) {
             log(status, "All-managers sweep failed: " + shortCause(t));
-        } finally {
-            disconnectQuietly(localCar);
         }
     }
 
@@ -189,15 +371,8 @@ public class NavigationRendererProbe {
      * mechanism: whichever package owns APP_FOCUS_TYPE_NAVIGATION at probe time is the one
      * actually feeding guidance data right now.
      */
-    private void probeNavigationFocusOwner(Context context, StatusListener status) {
-        Object localCar = null;
+    private void probeNavigationFocusOwner(Class<?> carClass, Object car, StatusListener status) {
         try {
-            Class<?> carClass = Class.forName("android.car.Car");
-            localCar = tryCreateCar(carClass, context, status);
-            if (localCar == null) {
-                log(status, "Nav-focus-owner probe: no Car instance available, skipping.");
-                return;
-            }
             String appFocusService = null;
             try {
                 Object v = carClass.getField("APP_FOCUS_SERVICE").get(null);
@@ -209,7 +384,7 @@ public class NavigationRendererProbe {
                 return;
             }
             Method getCarManager = carClass.getMethod("getCarManager", String.class);
-            Object focusMgr = getCarManager.invoke(localCar, appFocusService);
+            Object focusMgr = getCarManager.invoke(car, appFocusService);
             if (focusMgr == null) {
                 log(status, "Nav-focus-owner probe: getCarManager(APP_FOCUS_SERVICE) returned null.");
                 return;
@@ -242,8 +417,6 @@ public class NavigationRendererProbe {
                     + "see docs/H7_DISPLAY_ARCHITECTURE.md section 10 on the AA/CarPlay borrow mechanism).");
         } catch (Throwable t) {
             log(status, "Nav-focus-owner probe failed: " + shortCause(t));
-        } finally {
-            disconnectQuietly(localCar);
         }
     }
 
@@ -300,50 +473,6 @@ public class NavigationRendererProbe {
         }
     }
 
-    /**
-     * The on-car result confirmed that android.car.Car.createCar(Context) is not present on this
-     * build. This helper logs all overloads and tries them in order rather than assuming a single
-     * signature and crashing with NoSuchMethodException on the first attempt.
-     */
-    private Object tryCreateCar(Class<?> carClass, Context context, StatusListener status) {
-        List<Method> overloads = new ArrayList<>();
-        for (Method m : carClass.getMethods()) {
-            if (m.getName().equals("createCar") && Modifier.isStatic(m.getModifiers())) {
-                overloads.add(m);
-            }
-        }
-        if (overloads.isEmpty()) {
-            log(status, "Cluster-info probe: android.car.Car has no createCar(...) overload at all on this build.");
-            return null;
-        }
-        StringBuilder found = new StringBuilder("Cluster-info probe: createCar overloads on this build: ");
-        for (Method m : overloads) found.append(describeParams(m)).append("  ");
-        log(status, found.toString());
-
-        for (Method m : overloads) {
-            try {
-                Class<?>[] paramTypes = m.getParameterTypes();
-                Object[] args = new Object[paramTypes.length];
-                for (int i = 0; i < paramTypes.length; i++) {
-                    args[i] = defaultArgFor(paramTypes[i], context);
-                }
-                Object car = m.invoke(null, args);
-                if (car != null) {
-                    log(status, "Cluster-info probe: createCar" + describeParams(m) + " succeeded.");
-                    return car;
-                }
-                log(status, "Cluster-info probe: createCar" + describeParams(m)
-                        + " returned null, trying next overload...");
-            } catch (Throwable t) {
-                Throwable cause = (t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null)
-                        ? t.getCause() : t;
-                log(status, "Cluster-info probe: createCar" + describeParams(m)
-                        + " threw " + cause + ", trying next overload...");
-            }
-        }
-        return null;
-    }
-
     private Object defaultArgFor(Class<?> paramType, Context context) {
         if (paramType.isAssignableFrom(context.getClass())) return context;
         if (paramType == int.class) return 0;
@@ -379,27 +508,22 @@ public class NavigationRendererProbe {
         return simple + (message == null || message.trim().isEmpty() ? "" : (": " + message));
     }
 
-    private void probeInstrumentClusterInfo(Context context, StatusListener status) {
-        Object localCar = null;
+    private void probeInstrumentClusterInfo(Class<?> carClass, Object car, StatusListener status) {
         try {
-            Class<?> carClass = Class.forName("android.car.Car");
-            localCar = tryCreateCar(carClass, context, status);
-            if (localCar == null) {
-                log(status, "Cluster-info probe: couldn't obtain a Car instance via any createCar(...) "
-                        + "overload on this build - can't run the rest of this check.");
-                return;
-            }
-
             String serviceName = findNavigationServiceConstant(status, carClass);
             if (serviceName == null) return;
 
             Method getCarManager = carClass.getMethod("getCarManager", String.class);
             Object navMgr;
             try {
-                navMgr = getCarManager.invoke(localCar, serviceName);
+                navMgr = getCarManager.invoke(car, serviceName);
             } catch (Throwable t) {
-                log(status, "Cluster-info probe: getCarManager(\"" + serviceName + "\") threw " + t
-                        + " - likely CAR_NAVIGATION_MANAGER not granted to this app.");
+                Throwable cause = (t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null)
+                        ? t.getCause() : t;
+                log(status, "Cluster-info probe: getCarManager(\"" + serviceName + "\") -> denied/failed: "
+                        + shortCause(cause) + "  (Car was genuinely connected, so - given CAR_NAVIGATION_MANAGER's "
+                        + "confirmed signature protection level - this is likely a real permission denial, "
+                        + "not a timing artifact.)");
                 return;
             }
             if (navMgr == null) {
@@ -430,14 +554,6 @@ public class NavigationRendererProbe {
             log(status, "Cluster-info probe: android.car classes aren't present on this build: " + e);
         } catch (Throwable t) {
             log(status, "Cluster-info probe failed: " + t);
-        } finally {
-            if (localCar != null) {
-                try {
-                    Method d = localCar.getClass().getMethod("disconnect");
-                    d.invoke(localCar);
-                } catch (Throwable ignored) {
-                }
-            }
         }
     }
 
