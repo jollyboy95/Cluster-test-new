@@ -15,3 +15,9 @@ in this project.
 If ClusterProbe is ever published or distributed beyond personal/private use, GPLv3's terms would
 apply to anything incorporating these files - worth a deliberate look before that happens. See
 `docs/H7_DISPLAY_ARCHITECTURE.md`'s "Android Auto receiver" section for the full rationale.
+
+**Do not move these files into a subfolder.** They must stay flat, directly under
+`app/src/main/proto/`. Their own `import "Foo.proto";` statements are same-directory relative
+(that's how they shipped in aasdk's own `aasdk_proto/` directory), so protoc cannot resolve them if
+they're nested - this is exactly what broke the first CI build that added them (every cross-file
+import failed with "File not found").

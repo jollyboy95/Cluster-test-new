@@ -364,7 +364,8 @@ against). Writing unverified C++/JNI and presenting it as working would be exact
 
 **What's actually used from aasdk:** only `aasdk_proto/*.proto` - the real, complete Android Auto
 protocol message definitions (auth, AV/video channel, bluetooth, sensor, control, input, etc.) -
-vendored verbatim and unmodified into `app/src/main/proto/aasdk/`, compiled to Java message
+vendored verbatim and unmodified into `app/src/main/proto/` (flat, not in a subfolder - see that
+directory's NOTICE.md for why), compiled to Java message
 classes by the Gradle protobuf plugin. None of aasdk's C++ implementation is used, linked, or
 reimplemented from its source; the actual receiver logic here is original Java/Kotlin written
 directly against Android's own public `UsbManager`/`UsbDeviceConnection` API and the public,
@@ -419,3 +420,45 @@ receiver.** Nothing beyond `StartAccessory` has been attempted, let alone demons
 the implemented steps are untested against a real phone as of this commit. The next on-car step is
 simply: plug the phone in via USB, enable the toggle, press the negotiation button, and see how far
 the real hardware actually gets - that result determines what gets built next, not an assumption.
+
+## v0.26 CI failure and fix: vendored protos must stay flat
+
+The first CI run after adding the Gradle protobuf plugin and the 96 vendored `.proto` files
+(run `39909088879`, commit `d8068708`) failed at `:app:generateDebugProto`. The sandbox this
+project is developed in cannot fetch the raw CI log directly - every attempt (`gh run view
+--log-failed`, `gh run download`, `gh api .../actions/jobs/<id>/logs`) hits the same `Forbidden`
+proxy block on the `results-receiver.actions.githubusercontent.com` / `*.blob.core.windows.net`
+signed-URL endpoints GitHub Actions uses for full logs. The workflow's own error-annotation step
+only grepped single matching lines ("FAILURE: Build failed...", "* What went wrong:") without the
+line(s) immediately after, which is where Gradle actually states the cause - so the first failure
+produced annotations with no real diagnostic value.
+
+**Fix applied before diagnosing further:** widened `.github/workflows/build.yml`'s annotation step
+to `grep -A 15` (grab 15 lines of context after each match) and added an unconditional "last 150
+lines of build_output.log" dump on failure. Re-pushing with just that change (no app-code change)
+surfaced the real error on the next CI run:
+
+```
+Execution failed for task ':app:generateDebugProto'.
+> protoc: stdout: . stderr: AVStreamTypeEnum.proto: File not found.
+AudioTypeEnum.proto: File not found.
+AudioConfigData.proto: File not found.
+VideoConfigData.proto: File not found.
+aasdk/AVChannelData.proto:21:1: Import "AVStreamTypeEnum.proto" was not found or had errors.
+aasdk/AVChannelData.proto:22:1: Import "AudioTypeEnum.proto" was not found or had errors.
+```
+
+**Root cause:** the vendored `.proto` files use same-directory-relative imports (e.g. `import
+"AudioTypeEnum.proto";`, no path prefix) because in aasdk's own source tree they all live flat in
+one `aasdk_proto/` directory. They had been vendored into a `app/src/main/proto/aasdk/` subfolder
+for tidiness, but the Gradle protobuf plugin's default proto import root is `src/main/proto/`
+itself - so every cross-file import failed to resolve once the files were one level deeper than
+that root.
+
+**Fix:** moved all 96 `.proto` files (and `NOTICE.md`) from `app/src/main/proto/aasdk/` up to
+`app/src/main/proto/` directly - a pure file-move, zero content changes, so "vendored verbatim and
+unmodified" still holds. `NOTICE.md` now explicitly warns against re-nesting them. Updated the
+path comments in both `build.gradle` files accordingly. This is a pure build-plumbing fix; it does
+not touch `ConnectionStage`/`AoapNegotiator`/`AndroidAutoReceiver` or any other v0.26 Java code, and
+does not change what connection stages are implemented vs. not (still only as far as
+`AOAP_START_ACCESSORY`, same as before - see the v0.26 section above).
