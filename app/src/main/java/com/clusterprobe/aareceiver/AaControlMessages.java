@@ -133,4 +133,22 @@ public final class AaControlMessages {
                 .varint(3, configIndex)
                 .toByteArray();
     }
+
+    /**
+     * AVMediaAckIndication { required int32 session=1; required uint32 value=2; } - per the
+     * vendored app/src/main/proto/AVMediaAckIndicationMessage.proto. We (the head unit) send this
+     * on the video channel after consuming media frames, to replenish the phone's "unacked" credit
+     * (granted as max_unacked in buildAvChannelSetupResponse above). Found to be necessary, not
+     * optional, by reading a real working VW MIB2 cluster-mirroring project's own documented
+     * failure mode: with max_unacked set low (we use 1) and no acks ever sent back, the phone
+     * sends exactly one frame and then stalls waiting for a credit that never arrives - it is not
+     * just a bitrate/corruption risk at higher max_unacked, it is a hard requirement for any video
+     * to flow past the first frame at all with the conservative value this project uses.
+     */
+    public static byte[] buildAvMediaAckIndication(int session, long value) {
+        return new MiniProto.Writer()
+                .varint(1, session)
+                .varint(2, value)
+                .toByteArray();
+    }
 }

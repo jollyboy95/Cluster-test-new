@@ -98,6 +98,7 @@ public final class AaSessionRunner {
             throws Exception {
         boolean videoChannelOpen = false;
         boolean videoSetupDone = false;
+        long[] ackCounter = {0}; // long[1] so the AV_MEDIA_* cases below can mutate it
 
         while (!stopRequested) {
             AaProtocol.SocketMessage msg = AaProtocol.readFrame(in);
@@ -147,10 +148,12 @@ public final class AaSessionRunner {
                         byte[] h264 = body.length > 8
                                 ? java.util.Arrays.copyOfRange(body, 8, body.length) : new byte[0];
                         listener.onVideoData(h264);
+                        sendMediaAck(out, tls, ackCounter);
                         break;
                     }
                     case 0x0001: // AV_MEDIA_INDICATION (no timestamp prefix)
                         listener.onVideoData(body);
+                        sendMediaAck(out, tls, ackCounter);
                         break;
                     default:
                         listener.onStatus("Session: unhandled VIDEO message id=0x"
@@ -168,6 +171,21 @@ public final class AaSessionRunner {
 
     private AaProtocol.SocketMessage readControlMessage(InputStream in, AaTlsSession tls) throws Exception {
         return AaProtocol.readFrame(in);
+    }
+
+    /**
+     * Sends AVMediaAckIndication on the video channel to replenish the phone's "unacked" media
+     * credit (granted as max_unacked=1 in AVChannelSetupResponse). This is NOT optional: a real,
+     * working VW MIB2 cluster-mirroring project's own documented failure mode confirms that with
+     * no acks sent back, the phone sends exactly one frame and then stalls forever waiting for a
+     * credit that never arrives - so this call happens right after every consumed AV_MEDIA(_WITH_
+     * TIMESTAMP)_INDICATION, before the next frame can be sent. See AaControlMessages.
+     * buildAvMediaAckIndication's doc comment for the source of this finding.
+     */
+    private void sendMediaAck(OutputStream out, AaTlsSession tls, long[] ackCounter) throws Exception {
+        ackCounter[0]++;
+        AaProtocol.writeFrame(out, VIDEO_CHANNEL_ID, 0x8004 /* AV_MEDIA_ACK_INDICATION */,
+                tls.encrypt(AaControlMessages.buildAvMediaAckIndication(0, ackCounter[0])), true);
     }
 
     private byte[] decryptIfNeeded(AaProtocol.SocketMessage msg, AaTlsSession tls) throws Exception {
