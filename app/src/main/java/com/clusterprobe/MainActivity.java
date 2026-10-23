@@ -246,6 +246,16 @@ public class MainActivity extends android.app.Activity {
                 + "unit and the phone need to already be on the same Wi-Fi network first (e.g. "
                 + "both on the same home/mobile hotspot). Type that IP below.");
         EditText wirelessIpField = addEditText(root, "Phone IP address (e.g. 192.168.1.42)");
+        Button toggleClusterLaunch = addButton(root, "Show session on: DEFAULT DISPLAY", null);
+        toggleClusterLaunch.setOnClickListener(v -> {
+            com.clusterprobe.aareceiver.AaWirelessManualConnect.launchOnClusterDisplay =
+                    !com.clusterprobe.aareceiver.AaWirelessManualConnect.launchOnClusterDisplay;
+            boolean onCluster = com.clusterprobe.aareceiver.AaWirelessManualConnect.launchOnClusterDisplay;
+            toggleClusterLaunch.setText("Show session on: " + (onCluster
+                    ? "CLUSTER (display " + CLUSTER_DISPLAY_ID + ", via Shizuku)" : "DEFAULT DISPLAY"));
+            appendLog("Next manual-IP connect will open the session screen on "
+                    + (onCluster ? "the cluster display (needs Shizuku permission granted)" : "the default display") + ".");
+        });
         addButton(root, "Connect (manual IP)", () -> {
             String ip = wirelessIpField.getText().toString();
             appendLog("Connecting to phone via manual IP...");

@@ -45,6 +45,16 @@ import rikka.shizuku.Shizuku;
  */
 public final class ThirdPartyAaLauncher {
 
+    /** Must match MainActivity's own CLUSTER_DISPLAY_ID/HUD_DISPLAY_ID - duplicated here rather
+     *  than shared, so this class (which also targets other apps' packages) stays self-contained.
+     *  Used both for the third-party apps below AND for launching this project's own
+     *  AndroidAutoSessionActivity onto a non-default display - see launchOwnAaSessionOnDisplay(). */
+    public static final int CLUSTER_DISPLAY_ID = 2;
+    public static final int HUD_DISPLAY_ID = 3;
+
+    private static final String OWN_PACKAGE = "com.clusterprobe";
+    private static final String OWN_AA_SESSION_ACTIVITY = "com.clusterprobe.aareceiver.AndroidAutoSessionActivity";
+
     public static final String HEADUNIT_RELOADED_PACKAGE = "gb.xxy.hr";
     /** DispatcherActivity is the one declared with the LAUNCHER intent filter in the APK's
      *  manifest (MainActivity is the screen it dispatches to after its own startup checks) - use
@@ -90,6 +100,24 @@ public final class ThirdPartyAaLauncher {
      *  from a background thread - not the listener's own responsibility. */
     private static void postStatus(Listener listener, String msg) {
         new Handler(Looper.getMainLooper()).post(() -> listener.onStatus(msg));
+    }
+
+    /**
+     * Launches THIS project's own AndroidAutoSessionActivity (the one AaWirelessManualConnect
+     * already hands a connected Socket to via its static pendingSocket field) directly onto a
+     * non-default display, via the same Shizuku-privileged "am start --display" route used for
+     * the third-party apps above - not a hack specific to them. The user's own factory GWM
+     * Android Auto integration already shows maps on the cluster, which confirms the underlying
+     * display plumbing works on this car; this is what lets OUR app decide to use that same
+     * display instead of relying on GWM's stock receiver or a third-party app's own choice.
+     *
+     * AndroidAutoSessionActivity's pendingSocket field must be set BEFORE calling this (same
+     * process, so the static field set from the caller's own already-running process is visible
+     * to the Activity instance "am start" creates - this only works because this launches our
+     * own app's component, not a separate process-isolated one).
+     */
+    public static void launchOwnAaSessionOnDisplay(int displayId, Listener listener) {
+        launchOnDisplay(displayId, OWN_PACKAGE, OWN_AA_SESSION_ACTIVITY, listener);
     }
 
     public static boolean isInstalled(Context context, String packageName) {

@@ -40,6 +40,18 @@ public final class AaWirelessManualConnect {
 
     public static final int DEFAULT_PORT = 5277;
 
+    /**
+     * Off by default (same convention as every other experimental switch in this project). When
+     * true, the session Activity is launched on the cluster display (display 2) via Shizuku's
+     * privileged "am start --display" route instead of the default display's plain
+     * context.startActivity() - this is what lets THIS app, not a third-party receiver or GWM's
+     * own stock integration, decide where Android Auto's video ends up. GWM's own factory AA
+     * integration already shows maps on the cluster on this car, which is why this is worth
+     * trying rather than guessing - the display itself is confirmed to accept this kind of
+     * content, we just need our own app routed there instead.
+     */
+    public static boolean launchOnClusterDisplay = false;
+
     private static AaWirelessManualConnect instance;
     private volatile boolean stopRequested = false;
     private Socket socket;
@@ -97,9 +109,18 @@ public final class AaWirelessManualConnect {
 
             AndroidAutoSessionActivity.pendingSocket = socket;
             socket = null; // ownership passed to the Activity - don't close it in finally below
-            android.content.Intent intent = new android.content.Intent(context, AndroidAutoSessionActivity.class);
-            intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
-            context.startActivity(intent);
+
+            if (launchOnClusterDisplay) {
+                log(status, "launchOnClusterDisplay is ON - launching the session screen on the "
+                        + "cluster display via Shizuku instead of the default display.");
+                com.clusterprobe.ThirdPartyAaLauncher.launchOwnAaSessionOnDisplay(
+                        com.clusterprobe.ThirdPartyAaLauncher.CLUSTER_DISPLAY_ID,
+                        msg -> log(status, msg));
+            } else {
+                android.content.Intent intent = new android.content.Intent(context, AndroidAutoSessionActivity.class);
+                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(intent);
+            }
         } catch (IOException e) {
             log(status, "Connection failed: " + e);
             setStage(status, AndroidAutoReceiver.StageStatus.TESTED_FAILING);

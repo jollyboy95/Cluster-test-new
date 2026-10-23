@@ -1151,3 +1151,64 @@ code) but it cannot catch a hand-written stub being wrong about a real library's
 API surface - that only CI, building against the real dependency, can catch. Worth treating a
 first CI run on any new Shizuku/AIDL-adjacent code as still "unverified" even after a clean local
 stub-compile.
+
+## v0.38: our own receiver can target the cluster display too, not just third-party apps
+
+Motivating fact, stated directly by the user: **the car's own stock/factory GWM Android Auto
+integration already shows maps on the cluster (display 2) on this exact car.** That's not a
+hypothesis to prove - it's confirmed, working, everyday behavior on this hardware. It settles the
+"can display 2 even accept this kind of content" question for good: yes, GWM's own stock receiver
+already does it. The open question was never whether display 2 can show AA video - it was how to
+get OUR OWN app's video there instead of depending on GWM's stock receiver's own choices, or on a
+third-party app's. v0.37 answered that question for third-party apps (Headunit Reloaded, DiAuto)
+via a Shizuku-privileged `am start --display`. v0.38 reuses the exact same mechanism for this
+project's own `AndroidAutoSessionActivity`, so the project's own from-scratch AA receiver
+(AaWirelessManualConnect -> AaSessionRunner -> AndroidAutoSessionActivity) can be told to open its
+decode surface on the cluster display instead of the default one.
+
+**What changed:**
+- `ThirdPartyAaLauncher.launchOwnAaSessionOnDisplay(int displayId, Listener listener)` - a new
+  public method, thin wrapper around the already-existing `launchOnDisplay()` plumbing, this time
+  pointed at this project's own package/activity (`com.clusterprobe` /
+  `com.clusterprobe.aareceiver.AndroidAutoSessionActivity`) instead of a third-party one. Uses the
+  exact same Shizuku UserService bind/runOnce/unbind cycle already CI-verified in v0.37 - no new
+  privileged-call code, just a new target.
+- `AaWirelessManualConnect.launchOnClusterDisplay` - new off-by-default public static field. When
+  `doConnect()` reaches its success path (TCP connect worked, `pendingSocket` handed to
+  `AndroidAutoSessionActivity`), it now branches: if the flag is on, it calls
+  `launchOwnAaSessionOnDisplay(CLUSTER_DISPLAY_ID, ...)` instead of the plain in-process
+  `context.startActivity(intent)`. Off by default (same convention as every other experimental
+  switch in this project) - the default in-process launch on the default display is unchanged
+  unless the user explicitly flips this on.
+- `MainActivity` - new toggle button in the "Wireless AA manual connect" section: "Show session
+  on: DEFAULT DISPLAY" / "Show session on: CLUSTER (display 2, via Shizuku)", flips
+  `AaWirelessManualConnect.launchOnClusterDisplay` and logs what the next manual-IP connect will
+  do. Requires Shizuku permission to already be granted (same requirement v0.37's buttons have) -
+  the button doesn't request it itself, it just reports what will happen.
+
+This keeps the single-video-stream-redirected-to-a-different-display approach (simple, reuses
+existing infrastructure) rather than building a true second AA protocol video channel for the
+cluster (a separate `AVChannel`/`ChannelDescriptor` advertised in `ServiceDiscoveryResponse`,
+matching what the mib-cluster-map project showed is a real, distinct protocol feature, and
+presumably what GWM's own stock receiver actually implements under the hood). That dual-channel
+version is still a real possibility worth coming back to if a single relocated video Activity
+turns out to be insufficient on-car (e.g. if the phone's own AA app refuses to send cluster-shaped
+content to a receiver that never advertised a cluster channel) - but it's considerably more
+protocol work, and this simpler version is worth trying first since it reuses everything v0.36/
+v0.37 already built and verified.
+
+**Verification done before pushing:** copied the three changed files
+(`ThirdPartyAaLauncher.java`, `AaWirelessManualConnect.java`, `ShellUserService.java` unchanged)
+into the project's persistent stub-compile harness alongside everything already there from v0.36/
+v0.37 (including the real fix for the `Shizuku.newProcess` private-access mistake) and recompiled
+clean, no errors. The new `MainActivity` button block was reviewed by hand against the file's own
+existing `addButton(parent, text, onClick)` signature and the established
+"addButton(..., null)` then `setOnClickListener` to flip text" toggle pattern already used three
+times elsewhere in the same file (the "Big centre number" toggle, the AA receiver master toggle,
+and the capture-frame toggle) - not full-harness-compiled, since MainActivity.java already builds
+against the real Android SDK on every CI run and this block only calls already-proven methods and
+an already-existing constant (`CLUSTER_DISPLAY_ID`, defined since before this session).
+
+**Status: not yet tested on-car.** The toggle has not been flipped and exercised on the real
+head unit yet. Still firmly within the user's own standing rule: no claim of a working on-car
+cluster-display handoff until it's actually been seen working on the car.
