@@ -15,6 +15,7 @@ import android.view.Display;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -234,6 +235,33 @@ public class MainActivity extends android.app.Activity {
         addButton(root, "Stop wireless AA bootstrap", () -> {
             com.clusterprobe.aareceiver.AaWirelessBootstrapServer.stop();
             appendLog("Wireless AA bootstrap stopped (if it was running).");
+        });
+
+        addSection(root, "Wireless AA manual connect (experimental - OpenAuto-style, simpler)");
+        addLabel(root, "Found by inspecting the real OpenAuto source: its own wireless mode is "
+                + "just a plain TCP connection to the phone's IP on port 5277 - no Bluetooth, no "
+                + "hotspot hosting on our side at all. On the phone: open Android Auto's own "
+                + "Settings, tap the version number repeatedly to unlock developer settings, then "
+                + "enable \"Start head unit server\" - it will show an IP address. Both this head "
+                + "unit and the phone need to already be on the same Wi-Fi network first (e.g. "
+                + "both on the same home/mobile hotspot). Type that IP below.");
+        EditText wirelessIpField = addEditText(root, "Phone IP address (e.g. 192.168.1.42)");
+        addButton(root, "Connect (manual IP)", () -> {
+            String ip = wirelessIpField.getText().toString();
+            appendLog("Connecting to phone via manual IP...");
+            com.clusterprobe.aareceiver.AaWirelessManualConnect.connect(getApplicationContext(), ip,
+                    com.clusterprobe.aareceiver.AaWirelessManualConnect.DEFAULT_PORT,
+                    new com.clusterprobe.aareceiver.AndroidAutoReceiver.StatusListener() {
+                        @Override public void onStatus(String msg) { appendLog(msg); }
+                        @Override public void onStageUpdate(com.clusterprobe.aareceiver.ConnectionStage stage,
+                                com.clusterprobe.aareceiver.AndroidAutoReceiver.StageStatus status) {
+                            appendLog("  stage: " + stage + " -> " + status);
+                        }
+                    });
+        });
+        addButton(root, "Stop manual connect", () -> {
+            com.clusterprobe.aareceiver.AaWirelessManualConnect.stop();
+            appendLog("Wireless manual connect stopped (if it was running).");
         });
 
         addSection(root, "Experimental: capture display content");
@@ -525,6 +553,15 @@ public class MainActivity extends android.app.Activity {
         if (onClick != null) b.setOnClickListener(v -> onClick.run());
         parent.addView(b);
         return b;
+    }
+
+    private EditText addEditText(LinearLayout parent, String hint) {
+        EditText et = new EditText(this);
+        et.setHint(hint);
+        et.setTextColor(Color.parseColor("#f3eee8"));
+        et.setHintTextColor(Color.parseColor("#9a8c78"));
+        parent.addView(et);
+        return et;
     }
 
     private Button addButtonTo(LinearLayout row, String text, Runnable onClick) {

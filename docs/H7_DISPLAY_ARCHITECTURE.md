@@ -780,3 +780,38 @@ SSID?) - separate from `onFailed()` so it can never short-circuit the hotspot-st
 Both ship disabled-by-default, same as everything else in this path - diagnostic improvements only,
 no behavioural change to what's attempted yet, pending the next on-car run's diagnostic output and
 a decision on how to proceed (see below).
+
+## v0.34: OpenAuto source inspected - a much simpler wireless path found
+
+User supplied the real OpenAuto source (f1xpl/openauto, GPLv3, same author as aasdk, built for
+Linux/RaspberryPi - C++/Qt/Boost, not portable to Android/Java as-is, and not copied here; read
+only as a reference spec, same approach already used for aasdk and aa-proxy-rs).
+
+Key finding, from `src/autoapp/UI/ConnectDialog.cpp`: OpenAuto's own "wireless" mode is nothing
+like the Bluetooth-RFCOMM-plus-hotspot bootstrap built in v0.32 - it's a **plain TCP client
+connection to a user-typed IP address on port 5277**. No Bluetooth, no AP hosting on the head
+unit's side at all. The README explains why: "Wireless (WiFi) mode via head unit server (must be
+enabled in hidden developer settings)" - a real, well-documented hidden option in the phone's own
+Android Auto app (tap the version number repeatedly in Android Auto's own Settings to unlock
+developer settings, then enable "Start head unit server"). In that mode **the phone becomes the
+TCP server** and shows its own IP; the head unit just connects out to it as an ordinary client.
+Port 5277 matches aa-proxy-rs's own `TCP_DHU_PORT` constant ("Desktop Head Unit") - Google's own
+real port for this, cross-confirming it rather than guessing.
+
+This sidesteps the v0.33 `ERROR_INCOMPATIBLE_MODE` hotspot dead-end entirely: neither device needs
+to host anything, they just both need to already be on the same Wi-Fi network (home/mobile Wi-Fi,
+or any hotspot either is already running for an unrelated reason). Far simpler to implement and
+test, and doesn't depend on this head unit's Wi-Fi chipset/OEM build supporting AP mode at all.
+
+Added `AaWirelessManualConnect.java` - opens a plain `Socket` to a typed IP:5277, reports success/
+failure through the same `ConnectionStage.WIRELESS_BOOTSTRAP` stage. New MainActivity section with
+an IP text field and Connect/Stop buttons, same master-toggle gate as every other AA path. Kept
+`AaWirelessBootstrapServer` (the Bluetooth+hotspot path) as-is, untouched - not deleted, since it
+may still be useful later (e.g. if a workaround for the hotspot issue turns up, or for a fully
+automatic connection without typing an IP by hand) - this is an additional, simpler option, not a
+replacement.
+
+**Status: built, compiles clean, pushed, CI green. Not yet tested on-car** (same evening the
+hotspot test failed - next test is tomorrow). Like the Bluetooth path, this also stops at "TCP
+connection confirmed" and is not yet wired into `AaProtocol`'s VersionRequest exchange - same
+deferred next step either way.
