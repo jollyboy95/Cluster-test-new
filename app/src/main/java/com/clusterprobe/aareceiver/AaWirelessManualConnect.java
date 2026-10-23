@@ -114,7 +114,7 @@ public final class AaWirelessManualConnect {
                 log(status, "launchOnClusterDisplay is ON - launching the session screen on the "
                         + "cluster display via Shizuku instead of the default display.");
                 com.clusterprobe.ThirdPartyAaLauncher.launchOwnAaSessionOnDisplay(
-                        com.clusterprobe.ThirdPartyAaLauncher.CLUSTER_DISPLAY_ID,
+                        context, com.clusterprobe.ThirdPartyAaLauncher.CLUSTER_DISPLAY_ID,
                         msg -> log(status, msg));
             } else {
                 android.content.Intent intent = new android.content.Intent(context, AndroidAutoSessionActivity.class);

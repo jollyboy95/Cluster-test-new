@@ -309,7 +309,7 @@ public class MainActivity extends android.app.Activity {
                         + ") is not installed on this unit.");
                 return;
             }
-            ThirdPartyAaLauncher.launchOnDisplay(CLUSTER_DISPLAY_ID, ThirdPartyAaLauncher.HEADUNIT_RELOADED_PACKAGE,
+            ThirdPartyAaLauncher.launchOnDisplay(this, CLUSTER_DISPLAY_ID, ThirdPartyAaLauncher.HEADUNIT_RELOADED_PACKAGE,
                     ThirdPartyAaLauncher.HEADUNIT_RELOADED_LAUNCH_ACTIVITY, this::appendLog);
         });
         addButton(root, "Launch Headunit Reloaded on HUD (display " + HUD_DISPLAY_ID + ") - experimental", () -> {
@@ -318,7 +318,7 @@ public class MainActivity extends android.app.Activity {
                         + ") is not installed on this unit.");
                 return;
             }
-            ThirdPartyAaLauncher.launchOnDisplay(HUD_DISPLAY_ID, ThirdPartyAaLauncher.HEADUNIT_RELOADED_PACKAGE,
+            ThirdPartyAaLauncher.launchOnDisplay(this, HUD_DISPLAY_ID, ThirdPartyAaLauncher.HEADUNIT_RELOADED_PACKAGE,
                     ThirdPartyAaLauncher.HEADUNIT_RELOADED_LAUNCH_ACTIVITY, this::appendLog);
         });
         addLabel(root, "DiAuto has a real cluster feature on BYD cars, but it's a BYD-specific "
@@ -331,7 +331,7 @@ public class MainActivity extends android.app.Activity {
                 appendLog("DiAuto (" + ThirdPartyAaLauncher.DIAUTO_PACKAGE + ") is not installed on this unit.");
                 return;
             }
-            ThirdPartyAaLauncher.launchOnDisplay(CLUSTER_DISPLAY_ID, ThirdPartyAaLauncher.DIAUTO_PACKAGE,
+            ThirdPartyAaLauncher.launchOnDisplay(this, CLUSTER_DISPLAY_ID, ThirdPartyAaLauncher.DIAUTO_PACKAGE,
                     ThirdPartyAaLauncher.DIAUTO_LAUNCH_ACTIVITY, this::appendLog);
         });
         addButton(root, "Launch DiAuto on HUD (display " + HUD_DISPLAY_ID + ") - experimental", () -> {
@@ -339,10 +339,10 @@ public class MainActivity extends android.app.Activity {
                 appendLog("DiAuto (" + ThirdPartyAaLauncher.DIAUTO_PACKAGE + ") is not installed on this unit.");
                 return;
             }
-            ThirdPartyAaLauncher.launchOnDisplay(HUD_DISPLAY_ID, ThirdPartyAaLauncher.DIAUTO_PACKAGE,
+            ThirdPartyAaLauncher.launchOnDisplay(this, HUD_DISPLAY_ID, ThirdPartyAaLauncher.DIAUTO_PACKAGE,
                     ThirdPartyAaLauncher.DIAUTO_LAUNCH_ACTIVITY, this::appendLog);
         });
-        addButton(root, "Request Shizuku permission (needed for the above)", () -> {
+        addButton(root, "Request Shizuku permission (fallback only - the above try direct launch first)", () -> {
             try {
                 Shizuku.requestPermission(4204);
                 appendLog("Shizuku permission requested - respond to the prompt, then retry the launch button.");

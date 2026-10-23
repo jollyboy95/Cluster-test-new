@@ -1,7 +1,9 @@
 package com.clusterprobe;
 
+import android.app.ActivityOptions;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
 import android.os.Handler;
@@ -116,8 +118,52 @@ public final class ThirdPartyAaLauncher {
      * to the Activity instance "am start" creates - this only works because this launches our
      * own app's component, not a separate process-isolated one).
      */
-    public static void launchOwnAaSessionOnDisplay(int displayId, Listener listener) {
-        launchOnDisplay(displayId, OWN_PACKAGE, OWN_AA_SESSION_ACTIVITY, listener);
+    public static void launchOwnAaSessionOnDisplay(Context context, int displayId, Listener listener) {
+        launchOnDisplay(context, displayId, OWN_PACKAGE, OWN_AA_SESSION_ACTIVITY, listener);
+    }
+
+    /**
+     * v0.39: try the plain, non-privileged route FIRST, before ever touching Shizuku.
+     *
+     * Real-world proof this can work on this exact head unit without root/Shizuku: SmartSplit (a
+     * third-party, non-rooted, normal-UID app the user has used for months) sends whole
+     * third-party apps - including its own case shown live, the "Interceptor" app opening full
+     * screen - to another display, no Shizuku, no adb. We hadn't confirmed SmartSplit's own
+     * mechanism (no APK to inspect yet), but AOSP's own ActivityStarter/ActivityStackSupervisor
+     * (the class backing ActivityOptions.setLaunchDisplayId()) has a well-known, fully public
+     * carve-out: isCallerAllowedToLaunchOnDisplay() allows a non-default-display launch WITHOUT
+     * any special permission whenever the CALLING APP'S OWN UID ALREADY HAS A WINDOW on that
+     * target display - no INTERNAL_SYSTEM_WINDOW, no shell UID, nothing extra needed. That matches
+     * our own situation closely: ClusterProbe's own dial overlay (OverlayManager/ClusterActivity)
+     * is already confirmed live on display 2 (the "ClusterProbe 1920x720" cluster photo) - so by
+     * the time this app tries to launch AndroidAutoSessionActivity on display 2, our own UID may
+     * already be present there, which would let this succeed directly. This is a real, documented
+     * AOSP behavior, not a guess about this specific vendor build - worth trying before Shizuku
+     * every time. If a direct attempt throws SecurityException (no presence on that display yet,
+     * or this build enforces it differently), this falls straight back to the already-working
+     * Shizuku "am start --display" route below - nothing is lost by trying the free route first.
+     */
+    private static boolean tryDirectLaunch(Context context, int displayId, String packageName,
+                                            String activityName, Listener listener) {
+        try {
+            ActivityOptions opts = ActivityOptions.makeBasic();
+            opts.setLaunchDisplayId(displayId);
+            Intent intent = new Intent();
+            intent.setComponent(new ComponentName(packageName, activityName));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+            context.startActivity(intent, opts.toBundle());
+            postStatus(listener, "Launched directly on display " + displayId
+                    + " via ActivityOptions.setLaunchDisplayId - no Shizuku needed for this one.");
+            return true;
+        } catch (SecurityException se) {
+            postStatus(listener, "Direct (no-Shizuku) launch denied on display " + displayId + ": "
+                    + se.getMessage() + " - falling back to the Shizuku \"am start --display\" route.");
+            return false;
+        } catch (Exception e) {
+            postStatus(listener, "Direct (no-Shizuku) launch attempt failed: " + e
+                    + " - falling back to the Shizuku route.");
+            return false;
+        }
     }
 
     public static boolean isInstalled(Context context, String packageName) {
@@ -134,7 +180,10 @@ public final class ThirdPartyAaLauncher {
      *  comment for why not Shizuku.newProcess()). Requires Shizuku permission to already be
      *  granted - callers should check/request that the same way GwmLogcatVehicleDataSource
      *  does, before calling this. */
-    public static void launchOnDisplay(int displayId, String packageName, String activityName, Listener listener) {
+    public static void launchOnDisplay(Context context, int displayId, String packageName, String activityName, Listener listener) {
+        if (tryDirectLaunch(context, displayId, packageName, activityName, listener)) {
+            return; // worked without Shizuku - nothing else to do
+        }
         if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
             postStatus(listener, "Shizuku permission not granted - request it first (same Shizuku "
                     + "permission the GWM logcat data source uses).");

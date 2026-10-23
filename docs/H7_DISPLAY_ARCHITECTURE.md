@@ -1212,3 +1212,61 @@ an already-existing constant (`CLUSTER_DISPLAY_ID`, defined since before this se
 **Status: not yet tested on-car.** The toggle has not been flipped and exercised on the real
 head unit yet. Still firmly within the user's own standing rule: no claim of a working on-car
 cluster-display handoff until it's actually been seen working on the car.
+
+## v0.39: try the non-privileged display launch first, Shizuku only as fallback
+
+New real-world evidence changed the plan. SmartSplit (a third-party, non-rooted app the user has
+used for months - not something built for this project) can send a whole other app's real window
+to a different display, no Shizuku, no adb, no root - demonstrated live: its "send app to screen"
+feature put the "Interceptor" app's own activity up full-screen, exactly like tapping the icon
+would, just on a different display. That means on THIS head unit, a normal app CAN relocate
+activities across displays without any shell-level privilege - v0.37/v0.38's Shizuku route was
+solving a problem that may not actually require solving that way.
+
+**Why this plausibly works without any special permission:** `ActivityOptions.setLaunchDisplayId()`
+is backed by AOSP's `ActivityStarter`/`ActivityStackSupervisor.isCallerAllowedToLaunchOnDisplay()`
+check, which has a well-documented, fully public carve-out: a caller may launch onto a non-default
+display without any special permission if that caller's OWN UID ALREADY HAS A WINDOW PRESENT on
+that target display - no `INTERNAL_SYSTEM_WINDOW`, no shell UID needed. ClusterProbe's own dial
+overlay is already confirmed live on display 2 (the "ClusterProbe 1920x720" cluster photo from
+this session) via `OverlayManager`/`ClusterActivity` - so by the time this app tries to launch
+`AndroidAutoSessionActivity` there too, our own UID may already satisfy that check. This is real,
+documented AOSP behavior, not a guess specific to this vendor build.
+
+**What changed:**
+- `ThirdPartyAaLauncher.tryDirectLaunch(Context, displayId, packageName, activityName, listener)` -
+  new private helper. Builds the exact same `ActivityOptions.setLaunchDisplayId()` +
+  `context.startActivity(intent, opts.toBundle())` call MainActivity's own pre-existing
+  `launchOnDisplay(int)` method already used for `ClusterActivity`, generalized to target any
+  package/activity (ours or a third party's). Returns true/false so the caller can fall through.
+- `launchOnDisplay(Context, int, String, String, Listener)` - now takes a `Context` (was previously
+  Shizuku-only) and tries `tryDirectLaunch()` FIRST. Only if that throws (most likely
+  `SecurityException` - no presence on that display yet, or this build enforces the check
+  differently than expected) does it fall back to the already-working v0.37/v0.38 Shizuku
+  `ShellUserService`/`am start --display` route. All four MainActivity call sites (Headunit
+  Reloaded cluster/HUD, DiAuto cluster/HUD) and `launchOwnAaSessionOnDisplay()` (used by
+  `AaWirelessManualConnect.launchOnClusterDisplay`) now go through this same try-direct-then-fall-
+  back path - nothing explicitly asks for Shizuku anymore unless the free route actually fails.
+- MainActivity's "Request Shizuku permission" button relabelled to make clear it's a fallback,
+  not a prerequisite, for the launch buttons above it.
+
+Shizuku and `ShellUserService` are kept, not removed - if the direct route turns out not to work
+for every case (e.g. launching a third-party app that has no existing window/presence on the
+target display yet, where the AOSP carve-out above wouldn't apply), the exact same CI-verified
+fallback from v0.37/v0.38 is still there with zero behavior change on that path.
+
+**Verification done before pushing:** added `ActivityOptions`/updated `Intent`/`Context` stubs to
+the project's stub-compile harness, copied in the three changed files, recompiled clean (no
+errors) alongside everything from v0.36-v0.38. The MainActivity call-site changes (adding `this`
+as the new first argument at four call sites, relabelling one button) were reviewed by hand against
+the file's own existing code, same as prior rounds - MainActivity already builds against the real
+Android SDK on every CI run.
+
+**Status: not yet tested on-car.** Whether the direct, no-Shizuku path actually succeeds here -
+and specifically whether it's the "our own UID already has a window on display 2" explanation, or
+something else - is unconfirmed until it's tried on the real unit. If it logs "Launched directly
+on display 2... no Shizuku needed," that's real confirmation. If it logs a `SecurityException` and
+falls back to Shizuku, the fallback path itself is already proven (v0.37 CI, needs on-car use
+still). Also still outstanding: getting the SmartSplit APK itself to inspect directly, which would
+settle definitively whether it uses this same AOSP carve-out or something else - offered to the
+user, not yet supplied.
