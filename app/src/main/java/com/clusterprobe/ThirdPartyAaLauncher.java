@@ -1,10 +1,13 @@
 package com.clusterprobe;
 
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
-
-import java.io.BufferedReader;
-import java.io.InputStream;
-import java.io.InputStreamReader;
+import android.os.Handler;
+import android.os.IBinder;
+import android.os.Looper;
+import android.os.RemoteException;
 
 import rikka.shizuku.Shizuku;
 
@@ -15,6 +18,14 @@ import rikka.shizuku.Shizuku;
  * logged as the workaround when ActivityOptions.setLaunchDisplayId() is denied for an ordinary
  * app's own in-process call (see that method's catch block): the shell UID has the latitude a
  * regular app does not.
+ *
+ * Runs the shell command through a short-lived Shizuku UserService (ShellUserService), NOT
+ * Shizuku.newProcess() directly - that was tried first and failed real CI compilation with
+ * "newProcess(String[],String[],String) has private access in Shizuku": the version of the
+ * Shizuku API this project builds against does not expose that method publicly. ShellUserService
+ * uses exactly the pattern GwmLogcatUserService already established (a Shizuku-bound process
+ * with shell UID, running a plain ProcessBuilder command internally) - a real build-time
+ * correction, not a guess.
  *
  * Why this class exists at all: this project's own from-scratch Android Auto receiver
  * (com.clusterprobe.aareceiver.*) is real protocol work, built and cross-checked against several
@@ -64,6 +75,8 @@ public final class ThirdPartyAaLauncher {
     public static final String DIAUTO_PACKAGE = "com.andrerinas.headunitrevived";
     public static final String DIAUTO_LAUNCH_ACTIVITY = "com.andrerinas.headunitrevived.aap.AapProjectionActivity";
 
+    private static final int SHELL_SERVICE_REQUEST_CODE = 9200;
+
     public interface Listener {
         void onStatus(String msg);
     }
@@ -76,10 +89,10 @@ public final class ThirdPartyAaLauncher {
      *  log() helper) that the CALLER posts to the main thread before invoking a status listener
      *  from a background thread - not the listener's own responsibility. */
     private static void postStatus(Listener listener, String msg) {
-        new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> listener.onStatus(msg));
+        new Handler(Looper.getMainLooper()).post(() -> listener.onStatus(msg));
     }
 
-    public static boolean isInstalled(android.content.Context context, String packageName) {
+    public static boolean isInstalled(Context context, String packageName) {
         try {
             context.getPackageManager().getPackageInfo(packageName, 0);
             return true;
@@ -88,61 +101,67 @@ public final class ThirdPartyAaLauncher {
         }
     }
 
-    /** Runs "am start --display <displayId> -n <packageName>/<activityName>" as the Shizuku
-     *  (shell-equivalent) UID. Requires Shizuku permission to already be granted - callers should
-     *  check/request that the same way GwmLogcatVehicleDataSource does, before calling this. */
+    /** Runs "am start --display <displayId> -n <packageName>/<activityName>" inside a
+     *  Shizuku-bound ShellUserService (shell UID, its own process - see that class's doc
+     *  comment for why not Shizuku.newProcess()). Requires Shizuku permission to already be
+     *  granted - callers should check/request that the same way GwmLogcatVehicleDataSource
+     *  does, before calling this. */
     public static void launchOnDisplay(int displayId, String packageName, String activityName, Listener listener) {
         if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
-            listener.onStatus("Shizuku permission not granted - request it first (same Shizuku "
+            postStatus(listener, "Shizuku permission not granted - request it first (same Shizuku "
                     + "permission the GWM logcat data source uses).");
             return;
         }
         String component = packageName + "/" + activityName;
         String cmd = "am start --display " + displayId + " -n " + component;
-        listener.onStatus("Running via Shizuku shell: " + cmd);
-        new Thread(() -> runShellCommand(cmd, listener), "third-party-aa-launch").start();
-    }
+        postStatus(listener, "Binding ShellUserService via Shizuku to run: " + cmd);
 
-    private static void runShellCommand(String cmd, Listener listener) {
-        Process process = null;
-        try {
-            process = Shizuku.newProcess(new String[]{"sh", "-c", cmd}, null, null);
-            StringBuilder outSb = new StringBuilder();
-            StringBuilder errSb = new StringBuilder();
-            readStream(process.getInputStream(), outSb);
-            readStream(process.getErrorStream(), errSb);
-            int exit = process.waitFor();
-            postStatus(listener, "am start exit=" + exit
-                    + (outSb.length() > 0 ? " stdout=" + outSb : "")
-                    + (errSb.length() > 0 ? " stderr=" + errSb : ""));
-            if (exit == 0) {
-                postStatus(listener, "If the app is installed and the display id is right, it should "
-                        + "now be showing on that display. If nothing appeared, check \"adb logcat\" "
-                        + "or the green/engineering menu for a rejection reason - some automotive "
-                        + "builds restrict which displays a non-system app's activity may land on "
-                        + "even from the shell UID.");
-            }
-        } catch (Throwable t) {
-            postStatus(listener, "Shizuku shell command failed: " + t);
-        } finally {
-            if (process != null) {
+        Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(
+                new ComponentName("com.clusterprobe", ShellUserService.class.getName()))
+                .daemon(false)
+                .processNameSuffix("third_party_aa_launch")
+                .debuggable(false)
+                .version(1);
+
+        ServiceConnection[] connectionHolder = new ServiceConnection[1];
+        connectionHolder[0] = new ServiceConnection() {
+            @Override
+            public void onServiceConnected(ComponentName name, IBinder binder) {
+                IShellService service = IShellService.Stub.asInterface(binder);
                 try {
-                    process.destroy();
-                } catch (Throwable ignored) {
+                    String result = service.runOnce(cmd);
+                    postStatus(listener, "am start result: " + result);
+                    if (result.startsWith("exit=0")) {
+                        postStatus(listener, "If the app is installed and the display id is right, "
+                                + "it should now be showing on that display. If nothing appeared, "
+                                + "check \"adb logcat\" or the green/engineering menu for a rejection "
+                                + "reason - some automotive builds restrict which displays a "
+                                + "non-system app's activity may land on even from the shell UID.");
+                    }
+                } catch (RemoteException e) {
+                    postStatus(listener, "ShellUserService call failed: " + e);
+                } finally {
+                    try {
+                        service.destroy();
+                    } catch (RemoteException ignored) {
+                    }
+                    try {
+                        Shizuku.unbindUserService(args, connectionHolder[0], true);
+                    } catch (Throwable ignored) {
+                    }
                 }
             }
-        }
-    }
 
-    private static void readStream(InputStream in, StringBuilder into) {
-        if (in == null) return;
-        try (BufferedReader r = new BufferedReader(new InputStreamReader(in))) {
-            String line;
-            while ((line = r.readLine()) != null) {
-                into.append(line).append(' ');
+            @Override
+            public void onServiceDisconnected(ComponentName name) {
+                // Expected right after destroy() above tears the process down - nothing to do.
             }
-        } catch (Exception ignored) {
-            // best-effort; a read failure here just means less diagnostic text, not a hard error
+        };
+
+        try {
+            Shizuku.bindUserService(args, connectionHolder[0]);
+        } catch (Throwable t) {
+            postStatus(listener, "Shizuku bindUserService failed: " + t);
         }
     }
 }
