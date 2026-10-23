@@ -1496,3 +1496,40 @@ in the project's harness alongside everything from v0.36-v0.42, clean, no errors
 `Session: VersionResponse ...` (meaning it just needed more time than one blocking read without a
 timeout implied) or the new, specific `SocketTimeoutException` message within ~8 seconds of
 "sending VersionRequest..." - either result is real progress over today's silent, indefinite hang.
+
+## v0.44: log the hotspot password - it was being captured, never shown
+
+A side discovery while debugging v0.43: during one of the test's reconnect attempts, the Wi-Fi
+Direct `createGroup()` BUSY failures were followed by the full `AaWirelessBootstrapServer` wireless
+AA bootstrap actually succeeding at the hotspot step for the first time on-car:
+
+```
+Hotspot up: ssid=AndroidShare_2272 bssid=(none)
+AA TCP session will listen on 192.168.49.1:59502
+Listening for RFCOMM connection on AAWG UUID 4de17a00-52cb-11e6-bdf4-0800200c9a66 - phone must
+already b[e paired...]
+```
+
+The user saw `AndroidShare_2272` show up as a real, password-protected network in the phone's own
+Wi-Fi list and asked for the password to join it manually - and there was no way to answer, because
+although `AaWirelessHotspot.onStarted()` already reads the real WPA2 passphrase straight off
+`LocalOnlyHotspotReservation.getWifiConfiguration().preSharedKey` and passes it through to
+`AaWirelessBootstrapServer`'s `HotspotResult.passphrase` field (used internally to build the
+`AaWirelessInfoResponse` sent over RFCOMM), the log line reporting the hotspot coming up only ever
+printed `ssid=...` and `bssid=...` - the password was captured and used internally the whole time,
+just never surfaced anywhere a person could read it.
+
+**Fix:** one line - `AaWirelessBootstrapServer`'s "Hotspot up: ..." log line now also prints
+`password=` + the real passphrase.
+
+Worth noting for next time this comes up: if the phone is already Bluetooth-paired for wireless
+Android Auto, the *intended* flow is for it to auto-join via the RFCOMM credential handoff this
+same bootstrap already starts listening for right after the hotspot comes up - no manual Wi-Fi
+join needed at all. Manually joining with the now-visible password is still useful as an isolated
+sanity check (confirms the AP itself is reachable and working, independent of whether the RFCOMM
+side completes), just not the end-to-end path this bootstrap is actually trying to establish.
+
+**Verification done before pushing:** one-line change, uses an existing, already-compiled `String`
+field (`hs.passphrase`, same field already read on the line just above for
+`AaWirelessInfoResponse`) - no new symbols, syntactically trivial, verified by inspection rather
+than a fresh stub-compile pass.

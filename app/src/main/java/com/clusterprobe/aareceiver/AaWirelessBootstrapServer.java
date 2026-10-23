@@ -106,7 +106,13 @@ public final class AaWirelessBootstrapServer {
                 setStage(status, AndroidAutoReceiver.StageStatus.TESTED_FAILING);
                 return;
             }
-            log(status, "Hotspot up: ssid=" + hs.ssid + " bssid=" + (hs.bssid.isEmpty() ? "(none)" : hs.bssid));
+            // v0.44: the passphrase was already being captured from LocalOnlyHotspotReservation's
+            // WifiConfiguration (see AaWirelessHotspot.onStarted) but never actually logged
+            // anywhere - a real gap, found when the hotspot succeeded on-car for the first time
+            // and the user had no way to read the (randomly Android-generated, different every
+            // time) password back off the phone's own Wi-Fi list to join it manually.
+            log(status, "Hotspot up: ssid=" + hs.ssid + " password=" + hs.passphrase + " bssid="
+                    + (hs.bssid.isEmpty() ? "(none)" : hs.bssid));
             if (stopRequested) return;
 
             // Step 2: open the TCP server socket the phone will connect back to.
