@@ -815,3 +815,43 @@ replacement.
 hotspot test failed - next test is tomorrow). Like the Bluetooth path, this also stops at "TCP
 connection confirmed" and is not yet wired into `AaProtocol`'s VersionRequest exchange - same
 deferred next step either way.
+
+## v0.35: a third wireless mechanism found - Wi-Fi Direct feasibility probe
+
+User supplied two more real, actively-developed Android-native (unlike OpenAuto - same platform
+as ClusterProbe) Android Auto receiver projects:
+- `headunit-borconi-master` ("Headunit Reloaded", AGPLv3) - its real "P2PWifi" mode
+  (`hu_act.java`'s `wifi_init()`/`wifi_start(4)`) uses `android.net.wifi.p2p.WifiP2pManager`
+  directly, connecting to a hardcoded `192.168.49.122` after `createGroup()` - confirming
+  `192.168.49.1` as the real, standard Wi-Fi-Direct group-owner address.
+- `open-headunit-main` (current, 2026/Android-Auto-17.4-era fork) - its README lists five real
+  wireless options side by side: **1. USB wireless dongle, 2. Native Mode (Wi-Fi Direct or
+  Headunit Hotspot handshake), 3. Headunit Server (Developer Mode, no root) - exactly the
+  manual-IP approach already built in v0.34, 4. Wireless Helper (legacy, blocked on AA 17.4+
+  without root), 5. a root workaround.** Its `WifiDirectManager.kt` (3400+ lines) is a heavily
+  hardened real implementation of option 2, including a `BUSY` (reason=2) retry pattern and
+  `192.168.49.1` GO-address fallback logic.
+
+This is valuable for two reasons: it independently confirms v0.34's manual-IP "Headunit Server"
+approach is the right thing to have tried first (open-headunit's own docs call it out as the
+current non-root recommendation given AA 17.4+ blocks the older automatic triggers) - and it
+surfaces a real alternative to the hotspot API that failed in v0.33.
+`WifiManager.startLocalOnlyHotspot()` (which failed with `ERROR_INCOMPATIBLE_MODE`) and
+`WifiP2pManager` (Wi-Fi Direct) are different Android APIs with different underlying driver
+requirements - Wi-Fi Direct is a long-standing Android CTS baseline requirement, so there's a real
+chance this automotive Wi-Fi chipset supports it even though the softAP path didn't.
+
+Added `AaWirelessDirectProbe.java` - deliberately minimal (not a port of open-headunit's 3000+
+line hardened manager, just a feasibility check): calls `WifiP2pManager.createGroup()` with a
+BUSY-retry, decodes the real AOSP failure-reason codes, and on success scans for the group-owner's
+`192.168.49.x` interface address. Stops there - does NOT attempt the phone-side join/handshake,
+which both reference projects show is a substantial, further research question of its own (not
+simply an SSID/passphrase exchange in every Android version). New MainActivity section with
+Run/Stop buttons. No new manifest permissions needed - `CHANGE_WIFI_STATE` and
+`ACCESS_FINE_LOCATION` (already declared for the hotspot path) cover `WifiP2pManager` too.
+
+**Status: built, compiles clean, pushed, CI green. Not yet tested on-car.** Three wireless options
+now exist side by side for tomorrow's test session: Bluetooth+hotspot bootstrap (v0.32, likely
+blocked by the same `ERROR_INCOMPATIBLE_MODE` issue), manual-IP Headunit Server connect (v0.34,
+best bet to work first time), and this Wi-Fi Direct feasibility probe (v0.35, cheap to test,
+answers whether a fuller Native Mode implementation is worth building next).

@@ -264,6 +264,28 @@ public class MainActivity extends android.app.Activity {
             appendLog("Wireless manual connect stopped (if it was running).");
         });
 
+        addSection(root, "Wireless AA: Wi-Fi Direct feasibility probe (experimental, research only)");
+        addLabel(root, "Found by inspecting headunit-borconi (\"Headunit Reloaded\") and open-headunit "
+                + "- both real Android-native AA receivers. Wi-Fi Direct (WifiP2pManager) is a "
+                + "different Android API from the hotspot one that failed last time - worth a cheap "
+                + "test to see if THIS hardware allows it. Only tests whether createGroup() itself "
+                + "works - does not yet try to get a real phone to join.");
+        addButton(root, "Run Wi-Fi Direct probe", () -> {
+            appendLog("Running Wi-Fi Direct feasibility probe...");
+            com.clusterprobe.aareceiver.AaWirelessDirectProbe.run(getApplicationContext(),
+                    new com.clusterprobe.aareceiver.AndroidAutoReceiver.StatusListener() {
+                        @Override public void onStatus(String msg) { appendLog(msg); }
+                        @Override public void onStageUpdate(com.clusterprobe.aareceiver.ConnectionStage stage,
+                                com.clusterprobe.aareceiver.AndroidAutoReceiver.StageStatus status) {
+                            appendLog("  stage: " + stage + " -> " + status);
+                        }
+                    });
+        });
+        addButton(root, "Stop Wi-Fi Direct probe", () -> {
+            com.clusterprobe.aareceiver.AaWirelessDirectProbe.stop();
+            appendLog("Wi-Fi Direct probe stopped (if it was running).");
+        });
+
         addSection(root, "Experimental: capture display content");
         addButton(root, "Test map capture (MediaProjection)", this::testCapture);
         Button toggleCapture = addButton(root, "Use captured frame in cluster: OFF", null);
