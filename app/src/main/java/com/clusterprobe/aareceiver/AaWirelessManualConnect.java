@@ -132,6 +132,11 @@ public final class AaWirelessManualConnect {
                 new android.os.Handler(android.os.Looper.getMainLooper()).post(() ->
                     com.clusterprobe.OverlayManager.showAaSession(context,
                         com.clusterprobe.ThirdPartyAaLauncher.CLUSTER_DISPLAY_ID, handoffSocket,
+                        // v0.42: mirror every AaSessionRunner status line to this class's own
+                        // log(), i.e. MainActivity's scrolling readable panel on the main screen -
+                        // the overlay's own on-cluster status line only ever shows the latest
+                        // message, overwriting itself, so a fast handshake can be invisible there.
+                        msg -> log(status, msg),
                         new com.clusterprobe.OverlayManager.Result() {
                             @Override public void ok() {
                                 log(status, "AA session overlay added on the cluster display.");

@@ -73,7 +73,9 @@ public class OverlayManager {
      * pendingSocket field uses, just passed directly here since there's no Activity launch/
      * re-creation step in between to require a static field).
      */
-    public static void showAaSession(Context appContext, int displayId, java.net.Socket socket, Result result) {
+    public static void showAaSession(Context appContext, int displayId, java.net.Socket socket,
+                                      com.clusterprobe.aareceiver.AaSessionOverlayView.ExternalLog externalLog,
+                                      Result result) {
         try {
             DisplayManager dm = (DisplayManager) appContext.getSystemService(Context.DISPLAY_SERVICE);
             Display target = dm.getDisplay(displayId);
@@ -85,7 +87,7 @@ public class OverlayManager {
             WindowManager wm = (WindowManager) displayContext.getSystemService(Context.WINDOW_SERVICE);
 
             com.clusterprobe.aareceiver.AaSessionOverlayView view =
-                    new com.clusterprobe.aareceiver.AaSessionOverlayView(displayContext, socket);
+                    new com.clusterprobe.aareceiver.AaSessionOverlayView(displayContext, socket, externalLog);
 
             WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                     WindowManager.LayoutParams.MATCH_PARENT,

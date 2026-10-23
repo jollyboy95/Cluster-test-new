@@ -56,7 +56,21 @@ public class AaSessionOverlayView extends FrameLayout implements SurfaceHolder.C
     private volatile boolean decoderRunning = false;
     private Thread decoderThread;
 
-    public AaSessionOverlayView(Context context, Socket socket) {
+    /**
+     * v0.42: the overlay's own statusView can only show ONE line at a time, overwriting itself on
+     * every AaSessionRunner status update - a real limitation found on first on-car use, where a
+     * fast-moving handshake (version exchange, TLS, auth, service discovery, channel open, AV
+     * setup) could all fly past in milliseconds and be invisible, leaving only whichever message
+     * happened to land last (often just "video decoder started", since that's wired to
+     * SurfaceView.surfaceCreated() independently of session progress) with no way to tell whether
+     * the session is actually stuck there or simply hasn't been given long enough. ExternalLog lets
+     * the caller (AaWirelessManualConnect) also mirror every status line to MainActivity's own
+     * scrolling, readable log panel on the main screen - so the full sequence is visible there
+     * without needing to photograph the reflective cluster display after every status change.
+     */
+    public interface ExternalLog { void onLine(String msg); }
+
+    public AaSessionOverlayView(Context context, Socket socket, ExternalLog externalLog) {
         super(context);
 
         surfaceView = new SurfaceView(context);
@@ -72,15 +86,16 @@ public class AaSessionOverlayView extends FrameLayout implements SurfaceHolder.C
         addView(statusView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        startSession(socket);
+        startSession(socket, externalLog);
     }
 
-    private void startSession(Socket socket) {
+    private void startSession(Socket socket, ExternalLog externalLog) {
         sessionRunner = new AaSessionRunner();
         sessionThread = new Thread(() -> sessionRunner.run(socket, new AaSessionRunner.Listener() {
             @Override public void onStatus(String msg) {
                 Log.i(TAG, msg);
                 setStatus(msg);
+                if (externalLog != null) externalLog.onLine(msg);
             }
             @Override public void onVideoData(byte[] h264) {
                 pendingVideo.offer(h264);
@@ -88,6 +103,7 @@ public class AaSessionOverlayView extends FrameLayout implements SurfaceHolder.C
             @Override public void onSessionEnded(String reason) {
                 Log.i(TAG, "session ended: " + reason);
                 setStatus("Session ended: " + reason);
+                if (externalLog != null) externalLog.onLine("Session ended: " + reason);
             }
         }), "aa-session-runner-overlay");
         sessionThread.setDaemon(true);

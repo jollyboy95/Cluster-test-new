@@ -1392,3 +1392,42 @@ The open question going into the next test is purely protocol-level: does video 
 flowing after "waiting for real frames", or does the session stall before the first frame -
 worth watching the log for stage updates and the phone for any lingering Android Auto connection
 prompt that might need accepting.
+
+## v0.42: mirror cluster-overlay session status to the readable main-screen log
+
+Second on-car test with v0.41 (threading fix): the overlay route worked cleanly every time this
+round, no crash, no fallback needed - "AA session overlay added on the cluster display" on every
+reconnect. But the cluster photo (taken after a fresh connect, a wait, and a reconnect) still only
+showed "Video decoder started (800x480) - waiting for real frames..." - unchanged from the first
+test.
+
+That is NOT solid evidence the session is actually stuck there. `AaSessionOverlayView`'s on-cluster
+status line is a single `TextView` that gets overwritten on every `AaSessionRunner.onStatus()`
+call - and decoder start is wired to `SurfaceView.surfaceCreated()`, which fires independently of
+and asynchronously from the session thread's own progress through the handshake (version exchange,
+TLS, auth, service discovery, channel open, AV channel setup). If the handshake all happened within
+milliseconds and then the surface creation callback happened to land last, the TextView would show
+exactly this same text even if the session is working perfectly and is genuinely just waiting on
+the phone's own Android Auto app to decide to open the video channel (a normal step that can take
+a few seconds, or longer without visible user action on the phone). A single overwriting line on a
+reflective cluster screen photographed after the fact cannot distinguish "stuck" from "still
+working" - there was no way to read the actual sequence of what happened.
+
+**Fix:** `AaSessionOverlayView` now takes an `ExternalLog` callback alongside the socket;
+`OverlayManager.showAaSession()` threads it through; `AaWirelessManualConnect` wires it to its own
+existing `log(status, msg)` - the same call that already writes to MainActivity's scrolling,
+readable log panel on the main screen. Every `AaSessionRunner.onStatus()`/`onSessionEnded()` call
+now shows up in BOTH places: the overlay's own on-cluster line (unchanged, still useful for an
+at-a-glance look) and the main screen's full scrollback (new - lets the whole handshake sequence be
+read properly, without photographing a reflective screen after every change).
+
+**Verification done before pushing:** stub-compiled the three changed files
+(`AaSessionOverlayView.java`, `OverlayManager.java`, `AaWirelessManualConnect.java`) in the
+project's harness alongside everything from v0.36-v0.41, clean, no errors.
+
+**Status: not yet re-tested on-car with this fix.** Next connect attempt should show the full
+session status sequence scrolling in the main-screen log - whether it reaches "video channel
+opened" / "AVChannelSetupRequest" / "video START_INDICATION received" (the furthest point this
+project's receiver has ever logged reaching) or stalls at an earlier step will now be directly
+readable there, settling whether this is a genuine protocol stall or just needed more time/a
+phone-side prompt.
