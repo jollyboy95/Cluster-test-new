@@ -46,6 +46,29 @@ jobs:
             echo "::error::build_output.log was not created - gradle may have failed before producing output."
           fi
 
+      - name: Print last 150 lines of build log (full context, not just matched lines)
+        if: steps.assemble.outcome == 'failure'
+        run: |
+          if [ -f build_output.log ]; then
+            echo "===== Last 150 lines of build_output.log ====="
+            tail -n 150 build_output.log | sed 's/%/pct/g'
+            echo "===== end of log tail ====="
+          else
+            echo "build_output.log was not created."
+          fi
+
+      - name: Print build log as annotations with surrounding context
+        if: steps.assemble.outcome == 'failure'
+        run: |
+          if [ -f build_output.log ]; then
+            grep -nE -A 15 "FAILURE: Build failed|^\* What went wrong:|error:" build_output.log \
+              | tail -n 200 \
+              | while IFS= read -r line; do
+                  safe=$(echo "$line" | sed 's/%/pct/g')
+                  echo "::error::${safe}"
+                done
+          fi
+
       - name: Fail job if assemble failed
         if: steps.assemble.outcome == 'failure'
         run: exit 1
