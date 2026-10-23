@@ -23,6 +23,8 @@ public enum ConnectionStage {
             + "UsbManager.openAccessory/UsbAccessory, which is the API for the opposite role (an "
             + "app that IS the accessory being opened by someone else); ClusterProbe is the host "
             + "here, so the re-enumerated phone is just a regular UsbDevice to us"),
+    VERSION_EXCHANGE("Send VersionRequest, read VersionResponse - the first real plaintext "
+            + "protocol message, over the bulk endpoints, before any TLS starts"),
     SSL_HANDSHAKE("TLS handshake over the raw accessory stream (Android Auto control channel)"),
     AUTH_COMPLETE("AuthCompleteIndication received - session authenticated"),
     SERVICE_DISCOVERY("ServiceDiscoveryRequest/Response - learn which channels the phone offers"),

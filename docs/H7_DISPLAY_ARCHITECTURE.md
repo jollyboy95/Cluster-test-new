@@ -564,3 +564,54 @@ raw bulk IN/OUT byte stream rather than a normal `Socket`/`SSLSocket` (there is 
 just two USB bulk endpoints), almost certainly via `javax.net.ssl.SSLEngine`'s non-blocking,
 buffer-based API, which is designed for exactly this kind of non-socket transport. This is real,
 substantially harder work than everything implemented so far, and is the next increment.
+
+## v0.29: real AA message framing + VersionRequest/VersionResponse exchange
+
+With `ACCESSORY_REOPEN` confirmed `TESTED_WORKING` on-car (see the v0.28 section above - a full,
+clean, fully-automatic run with real phone, real handshake, real re-enumeration, permission grant,
+interface claim and bulk endpoints all actually happened), the next real piece of work is the
+Android Auto message framing itself, before `SSL_HANDSHAKE` can mean anything (even the TLS
+handshake's own bytes travel wrapped in this framing, as an `SSL_HANDSHAKE` (0x0003) message).
+
+**The frame format was read directly from aasdk's real source** (not guessed, not copied as code -
+reimplemented in Java against what the C++ documents), specifically `Messenger/FrameHeader.{hpp,
+cpp}`, `Messenger/FrameSize.{hpp,cpp}`, `Messenger/EncryptionType.hpp`, `Messenger/MessageType.hpp`,
+`Messenger/ChannelId.hpp`, and `Messenger/MessageOutStream.cpp` (specifically to confirm SHORT vs.
+EXTENDED framing is chosen by frame type, not guessed): a 2-byte header (channel ID + a flags byte
+combining frame type/encryption/message-type bits) followed by a 2-byte (SHORT) or 6-byte
+(EXTENDED, multi-frame only) big-endian size field, followed by the payload - whose own first 2
+bytes are a big-endian message ID (from the already-vendored `ControlMessageIdsEnum.proto`).
+`Channel/Control/ControlServiceChannel.cpp` confirmed the exact fields needed for `VersionRequest`/
+`VersionResponse` (both PLAIN, not protobuf-encoded - a quirk of the real protocol: just 4 raw
+bytes, major+minor as big-endian uint16s) and settled an ambiguity in `ConnectionStage`'s
+description from v0.26: every real control-channel message, even ones on the CONTROL channel, uses
+`MessageType.SPECIFIC`, not `MessageType.CONTROL` - that flag is something else aasdk's own code
+never sets from this file.
+
+**What v0.29 adds:**
+- `AaProtocol.java` - the frame/message read/write layer over the bulk IN/OUT endpoints
+  `ACCESSORY_REOPEN` already claims. Only single-frame (`BULK`, i.e. `FIRST|LAST`) messages are
+  implemented - true multi-frame (EXTENDED-size, `MIDDLE`/`LAST` continuation) messages are
+  detected and reported cleanly, not silently mishandled, since every message this version sends
+  or expects is small enough to fit in one frame regardless.
+- A new `ConnectionStage.VERSION_EXCHANGE`, between `ACCESSORY_REOPEN` and `SSL_HANDSHAKE`: sends
+  a `VersionRequest` (declaring v1.1 - the same version aasdk itself declares, a real,
+  widely-interoperable value), reads back a `VersionResponse`, and logs the phone's reported
+  version and MATCH/MISMATCH status. This is a genuine, independently meaningful on-car test of
+  the new framing layer, in plaintext, lower-risk than and a prerequisite for the TLS work after
+  it.
+
+**What v0.29 explicitly does NOT do:** anything with TLS/SSL. The real fixed certificate/private
+key pair aasdk's `Cryptor.cpp` uses (labeled "Google Automotive Link"/"JVC Kenwood" in the cert's
+own subject, GPLv3, same provenance as the vendored `.proto` files - every open-source AA head
+unit implementation uses this exact same pair, since the protocol's TLS layer doesn't validate
+against a real CA here) has been found and confirmed in the real source, but is not vendored or
+used yet - that starts with `ConnectionStage.SSL_HANDSHAKE` itself, the next increment, which also
+needs `javax.net.ssl.SSLEngine`'s non-blocking buffer-based API (there's no `Socket` here, just two
+USB bulk endpoints) - genuinely the hardest piece of work in this project so far.
+
+**On-car test needed next:** run the AA receiver negotiation as before; if `ACCESSORY_REOPEN`
+succeeds, watch for the new `VersionRequest -> ... VersionResponse -> phone reports vX.Y,
+status=...` log lines. A real version number and MATCH status from the phone would be the first
+confirmation that two-way message exchange over the claimed bulk endpoints actually works, before
+any encryption is involved.

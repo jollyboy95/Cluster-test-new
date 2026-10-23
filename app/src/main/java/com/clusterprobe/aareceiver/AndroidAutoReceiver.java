@@ -318,11 +318,64 @@ public class AndroidAutoReceiver {
         }
         setStage(status, ConnectionStage.ACCESSORY_REOPEN, StageStatus.TESTED_WORKING);
         log(status, "AA receiver: ConnectionStage.ACCESSORY_REOPEN is DONE - bulk endpoints found "
-                + "and interface claimed. ConnectionStage.SSL_HANDSHAKE onward (the actual Android "
-                + "Auto TLS/protocol session) is NOT_IMPLEMENTED yet - nothing has been read or "
-                + "written on these endpoints. No session, no video, no connection claim beyond "
-                + "what's logged above. Leaving the interface claimed/connection open for now "
-                + "(nothing currently closes it) since a future SSL_HANDSHAKE step will need it.");
+                + "and interface claimed.");
+
+        return runVersionExchange(connection, endpoints, status);
+    }
+
+    /**
+     * The real protocol's first message, plaintext, before any TLS: send VersionRequest (major/
+     * minor, raw 4 bytes, not protobuf - see AaProtocol), read back VersionResponse. This is a
+     * genuine, independently meaningful on-car test of the new AaProtocol frame/message layer,
+     * separate from and lower-risk than the actual SSL handshake that comes after it.
+     */
+    private boolean runVersionExchange(UsbDeviceConnection connection,
+                                        AoapNegotiator.AccessoryEndpoints endpoints, StatusListener status) {
+        setStage(status, ConnectionStage.VERSION_EXCHANGE, StageStatus.RUNNING);
+
+        AaProtocol.Result sendResult = AaProtocol.writeMessage(connection, endpoints.bulkOut,
+                AaProtocol.CHANNEL_CONTROL, AaProtocol.MESSAGE_ID_VERSION_REQUEST,
+                AaProtocol.buildVersionRequestBody(), false);
+        log(status, "AA receiver: VersionRequest (v" + AaProtocol.VERSION_MAJOR + "."
+                + AaProtocol.VERSION_MINOR + ") -> " + sendResult.detail);
+        if (!sendResult.success) {
+            setStage(status, ConnectionStage.VERSION_EXCHANGE, StageStatus.TESTED_FAILING);
+            log(status, "AA receiver: ConnectionStage.SSL_HANDSHAKE onward is NOT_IMPLEMENTED - "
+                    + "stopping here. No session, no video.");
+            return false;
+        }
+
+        AaProtocol.Result readResult = AaProtocol.readMessage(connection, endpoints.bulkIn);
+        log(status, "AA receiver: reading VersionResponse -> " + readResult.detail);
+        if (!readResult.success) {
+            setStage(status, ConnectionStage.VERSION_EXCHANGE, StageStatus.TESTED_FAILING);
+            log(status, "AA receiver: ConnectionStage.SSL_HANDSHAKE onward is NOT_IMPLEMENTED - "
+                    + "stopping here. No session, no video.");
+            return false;
+        }
+
+        AaProtocol.AaMessage msg = readResult.message;
+        if (msg.messageId != AaProtocol.MESSAGE_ID_VERSION_RESPONSE) {
+            log(status, "AA receiver: expected VersionResponse (messageId=0x0002) but got "
+                    + "messageId=0x" + Integer.toHexString(msg.messageId) + " instead - unexpected, "
+                    + "not handled.");
+            setStage(status, ConnectionStage.VERSION_EXCHANGE, StageStatus.TESTED_FAILING);
+            log(status, "AA receiver: ConnectionStage.SSL_HANDSHAKE onward is NOT_IMPLEMENTED - "
+                    + "stopping here. No session, no video.");
+            return false;
+        }
+
+        AaProtocol.VersionResponse version = AaProtocol.parseVersionResponseBody(msg.body);
+        log(status, "AA receiver: VersionResponse -> phone reports v" + version.major + "."
+                + version.minor + ", status=" + (version.isMatch() ? "MATCH" : "MISMATCH (0x"
+                + Integer.toHexString(version.status) + ")") + ".");
+        setStage(status, ConnectionStage.VERSION_EXCHANGE, StageStatus.TESTED_WORKING);
+
+        log(status, "AA receiver: ConnectionStage.VERSION_EXCHANGE is DONE. ConnectionStage."
+                + "SSL_HANDSHAKE onward (the actual TLS handshake, auth, video) is NOT_IMPLEMENTED "
+                + "yet - nothing past this point has happened. No session, no video, no connection "
+                + "claim beyond what's logged above. Leaving the interface claimed/connection open "
+                + "for now (nothing currently closes it) since SSL_HANDSHAKE will need it.");
         return true;
     }
 
