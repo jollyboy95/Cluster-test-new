@@ -462,3 +462,51 @@ path comments in both `build.gradle` files accordingly. This is a pure build-plu
 not touch `ConnectionStage`/`AoapNegotiator`/`AndroidAutoReceiver` or any other v0.26 Java code, and
 does not change what connection stages are implemented vs. not (still only as far as
 `AOAP_START_ACCESSORY`, same as before - see the v0.26 section above).
+
+## v0.27: button-event probe - a lead from a second reference app (SmartSplit)
+
+A second real commercial app was analyzed for grounding, read-only, same method as DiPlay and the
+factory AndroidAuto.apk before it: "SmartSplit" (`com.smartlink.smartsplit`), a licensed,
+VIN-locked app described in its own manifest as "Vehicle dashboard overlay and split-screen
+automation for Haval **H9**" - same GWM/Harman platform family as this H7, not a confirmed exact
+match.
+
+**Two findings, both grounded in the actual `classes.dex` strings, not guessed:**
+
+1. It reads physical button events from a system property, `sys.other.keyevent_notify`, via
+   reflection on the hidden `android.os.SystemProperties.get(String)` method, with a shell
+   `getprop` fallback when reflection fails. Values are parsed with the regex
+   `sys\.other\.keyevent_notify.*\[([0-9]+),\s*([0-9]+)\]` - i.e. button events are published as
+   `[code, value]` pairs. No special permission is needed beyond hidden-API access - the same kind
+   of reflective access this project already uses elsewhere for other hidden Car-service APIs.
+
+2. It tries privileged input injection first (`InputManager.injectInputEvent` /
+   `createInputForwarder`, both hidden methods) and its own log strings show that failing
+   ("InputManager injectInputEvent method is unavailable") on real hardware, falling back to
+   `AccessibilityService`-based synthetic taps/gestures (`ClusterAccessibilityService`) for actual
+   on-cluster interaction - a standard, non-privileged permission, not root/signature. One of its
+   log lines ("Accessibility overlay has no display-2 token; trying app overlay") shows it hits
+   the same "how do you draw on display 2" problem this project solved with
+   `ActivityOptions.setLaunchDisplayId` - confirming that's a genuinely awkward part of this
+   platform for everyone, not just us.
+
+Nothing in SmartSplit's strings touches `car.ipk_setting.theme_config` or anything resembling the
+hut-code/vehicle-coding backup - it only reads ordinary vehicle signal properties
+(`car.basic.steering_wheel_angle`, `car.ipk_light.fuel_low_lmpsts`, `persist.gwm.vehicle.vin`).
+
+**What v0.27 adds:** `ButtonEventProbe.java` - a read-only diagnostic, same start/stop/background-
+thread pattern as `ClusterStateBroadcastListener`/`NavigationRendererProbe`. Polls
+`sys.other.keyevent_notify` every 300ms (reflection first, `getprop` shell fallback second, same
+two paths SmartSplit itself uses), logs the initial value once and then only logs again on change.
+No input injection, no synthetic taps, nothing written anywhere - this only reads. **Not yet
+confirmed working on this H7** - SmartSplit's target is the H9, and this property may not exist,
+or may behave differently, here. The real test is pressing a steering-wheel/cluster button on the
+car while this probe is running and watching for a logged change.
+
+**Why this matters beyond diagnostics:** the user's stated longer-term goals are (a) eventually
+giving the cluster overlay real button-driven control (e.g. switching what's shown on Display 2
+once the Android Auto receiver is actually projecting a map there), and (b) a possible future
+CarPlay/CarPlay Ultra receiver alongside the Android Auto one. A working, non-privileged way to
+read physical button events would be useful groundwork for both - but input *injection*/synthetic
+interaction is explicitly out of scope for this increment, and nothing here claims button control
+works, only that button *reading* is being probed.

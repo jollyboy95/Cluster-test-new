@@ -11,8 +11,8 @@ android {
         applicationId "com.clusterprobe"
         minSdk 28
         targetSdk 28
-        versionCode 26
-        versionName "0.26"
+        versionCode 27
+        versionName "0.27"
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8

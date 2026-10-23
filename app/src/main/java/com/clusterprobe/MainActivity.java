@@ -143,6 +143,21 @@ public class MainActivity extends android.app.Activity {
             appendLog("Cluster-renderer probe stopped, any bind torn down, cluster-state broadcast listener unregistered.");
         });
 
+        addSection(root, "Button event probe (experimental - lead from a reference app, see docs)");
+        addLabel(root, "Polls the system property \"sys.other.keyevent_notify\" every 300ms, which "
+                + "a real commercial app (SmartSplit, built for Haval H9) reads to learn about "
+                + "physical button presses. Not yet confirmed on this H7 - this only logs the raw "
+                + "value and any change, read-only, no input injection. Press a steering-wheel or "
+                + "cluster button on the car while this is running and watch the log.");
+        addButton(root, "Run button event probe", () -> {
+            appendLog("Starting ButtonEventProbe...");
+            ButtonEventProbe.start(msg -> appendLog(msg));
+        });
+        addButton(root, "Stop button event probe", () -> {
+            ButtonEventProbe.stop();
+            appendLog("Button event probe stopped.");
+        });
+
         addSection(root, "Android Auto receiver (experimental, OFF by default - see docs)");
         addLabel(root, "Builds ClusterProbe's own Android Auto receiver, independent of GWM's "
                 + "factory one. USB/AOAP negotiation only, as far as ConnectionStage.AOAP_START_"
