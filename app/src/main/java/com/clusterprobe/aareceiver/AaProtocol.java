@@ -2,6 +2,9 @@ package com.clusterprobe.aareceiver;
 
 import android.hardware.usb.UsbDeviceConnection;
 import android.hardware.usb.UsbEndpoint;
+import android.hardware.usb.UsbRequest;
+
+import java.nio.ByteBuffer;
 
 /**
  * The real Android Auto wire framing, read directly from aasdk's actual source
@@ -59,7 +62,17 @@ public final class AaProtocol {
     public static final int VERSION_MAJOR = 1;
     public static final int VERSION_MINOR = 1;
 
-    private static final int BULK_TIMEOUT_MS = 3000;
+    private static final int WRITE_TIMEOUT_MS = 3000;
+    /** 2026-10-23 on-car result: the VersionRequest WRITE succeeded via plain bulkTransfer(), but
+     *  the response READ timed out ("returned -1 after 0/4 bytes") even though the write clearly
+     *  reached the phone. Android's synchronous UsbDeviceConnection.bulkTransfer() for READS has
+     *  well-documented reliability problems on several SoCs, Qualcomm platforms (this head unit's
+     *  SA8155) among them - community Android-Auto-host implementations generally use the
+     *  asynchronous UsbRequest/requestWait() API for bulk reads specifically because of this.
+     *  Switched readExactly to that below. Not a certain fix - genuinely don't know yet whether
+     *  this was the real cause or something else (e.g. the phone just needing longer before its
+     *  first response) - this is the most plausible, well-precedented explanation to try first. */
+    private static final int READ_TIMEOUT_MS = 6000;
 
     public static final class AaMessage {
         public final int channelId;
@@ -115,7 +128,7 @@ public final class AaProtocol {
 
         int sent;
         try {
-            sent = connection.bulkTransfer(bulkOut, frame, frame.length, BULK_TIMEOUT_MS);
+            sent = connection.bulkTransfer(bulkOut, frame, frame.length, WRITE_TIMEOUT_MS);
         } catch (Throwable t) {
             return Result.fail("bulkTransfer (write) threw: " + t);
         }
@@ -173,27 +186,53 @@ public final class AaProtocol {
         }
     }
 
-    /** Loops bulkTransfer reads into `out` until it's full, a read fails/times out, or a read
-     *  returns 0/negative (treated as end-of-stream/error, not spun on). */
+    /** Loops reads into `out` until it's full or a read fails/times out. Uses the asynchronous
+     *  UsbRequest/requestWait() API rather than the synchronous UsbDeviceConnection.bulkTransfer()
+     *  used for writes - see the READ_TIMEOUT_MS comment above for why (a 2026-10-23 on-car run
+     *  showed a write via bulkTransfer succeeding while the read via bulkTransfer reliably timed
+     *  out on this exact hardware, which matches a known class of synchronous-bulk-read
+     *  reliability problem on several Android USB host controllers). */
     private static Result readExactly(UsbDeviceConnection connection, UsbEndpoint bulkIn, byte[] out) {
         int got = 0;
         while (got < out.length) {
-            byte[] chunk = new byte[out.length - got];
-            int n;
+            int remaining = out.length - got;
+            UsbRequest request = new UsbRequest();
+            ByteBuffer buffer = ByteBuffer.allocate(remaining);
             try {
-                n = connection.bulkTransfer(bulkIn, chunk, chunk.length, BULK_TIMEOUT_MS);
+                if (!request.initialize(connection, bulkIn)) {
+                    return Result.fail("UsbRequest.initialize() returned false after " + got + "/"
+                            + out.length + " bytes.");
+                }
+                if (!request.queue(buffer)) {
+                    return Result.fail("UsbRequest.queue() returned false after " + got + "/"
+                            + out.length + " bytes.");
+                }
+                UsbRequest completed;
+                try {
+                    completed = connection.requestWait(READ_TIMEOUT_MS);
+                } catch (Throwable t) {
+                    return Result.fail("requestWait() threw after " + got + "/" + out.length
+                            + " bytes: " + t);
+                }
+                if (completed == null) {
+                    return Result.fail("requestWait() timed out after " + READ_TIMEOUT_MS
+                            + "ms (got " + got + "/" + out.length + " bytes so far).");
+                }
+                int n = buffer.position(); // bytes actually transferred into the buffer
+                if (n <= 0) {
+                    return Result.fail("UsbRequest completed with " + n + " bytes after " + got
+                            + "/" + out.length + " bytes (nothing sent, or a zero-length packet).");
+                }
+                buffer.flip();
+                buffer.get(out, got, n);
+                got += n;
             } catch (Throwable t) {
-                return Result.fail("bulkTransfer (read) threw after " + got + "/" + out.length
-                        + " bytes: " + t);
+                return Result.fail("readExactly threw after " + got + "/" + out.length + " bytes: " + t);
+            } finally {
+                try { request.close(); } catch (Throwable ignored) { }
             }
-            if (n <= 0) {
-                return Result.fail("bulkTransfer (read) returned " + n + " after " + got + "/"
-                        + out.length + " bytes (timeout or nothing sent).");
-            }
-            System.arraycopy(chunk, 0, out, got, n);
-            got += n;
         }
-        return Result.ok("read " + out.length + " bytes.");
+        return Result.ok("read " + out.length + " bytes (via UsbRequest).");
     }
 
     /** Builds a VersionRequest body: 4 bytes = major(BE uint16) + minor(BE uint16), per

@@ -615,3 +615,39 @@ succeeds, watch for the new `VersionRequest -> ... VersionResponse -> phone repo
 status=...` log lines. A real version number and MATCH status from the phone would be the first
 confirmation that two-way message exchange over the claimed bulk endpoints actually works, before
 any encryption is involved.
+
+## v0.30: VersionRequest write confirmed on-car; fixing the read path
+
+On-car logs (2026-10-23) ran `VERSION_EXCHANGE` for the first time. Two outcomes:
+
+- A stale, already-accessory device from a prior run: the `VersionRequest` write itself failed
+  immediately (`bulkTransfer (write) sent -1 of 10 bytes`) - the claimed interface from an old
+  session wasn't actually usable for I/O (not investigated further - a fresh run avoids this).
+- A fresh, full handshake (real AOAP negotiation -> automatic re-enumeration -> permission granted
+  -> interface claimed): **the `VersionRequest` write succeeded** - `sent messageId=0x1, 10 bytes
+  total (4-byte body)`. This is the first real data this project has ever transmitted to the phone
+  over the Android Auto channel itself, not just the USB/AOAP setup layer. But reading the
+  `VersionResponse` back timed out: `bulkTransfer (read) returned -1 after 0/4 bytes`.
+
+A write succeeding while a read on the same endpoint pair reliably times out points at something
+specific, not a protocol-level encoding bug: Android's synchronous `UsbDeviceConnection.
+bulkTransfer()` for *reads* has well-documented reliability problems on several SoCs, Qualcomm
+platforms (this head unit's SA8155) among them. Community Android-Auto-host implementations
+generally use the asynchronous `UsbRequest`/`requestWait()` API for bulk reads specifically
+because of this.
+
+**What v0.30 changes:** `AaProtocol.readExactly` now uses `UsbRequest.queue(ByteBuffer)` +
+`UsbDeviceConnection.requestWait(long)` instead of synchronous `bulkTransfer()` for reads (writes
+are unchanged - they already worked). Read timeout also raised from 3s to 6s, in case the phone
+simply needs longer before its first response. **This is a plausible, well-precedented fix, not a
+certain one** - the real cause could still be something else (a subtly wrong `VersionRequest`
+encoding that the phone silently ignores, a missing step before `VersionRequest` is valid, etc.).
+The next on-car run is what actually tells us.
+
+Also worth recording: during this test the car's screen fell back to the factory GWM Android Auto
+experience after our receiver's negotiation stalled. This is expected, not a bug - this project's
+receiver has never touched or disabled GWM's factory receiver, and our side doesn't yet complete a
+real session (it deliberately stops the moment `VERSION_EXCHANGE` fails), so the phone falls back
+to whatever can actually finish a handshake. Same "swap not tap" behaviour already confirmed with
+Head Unit Revived on this car - will keep happening on every test run until this receiver actually
+completes a full session, not something to fix separately.
