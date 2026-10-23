@@ -103,3 +103,87 @@ Two changes:
   `SecurityException`, `avc:`, `Permission Denial`, etc.) - the only way left to find out *why*
   the connection times out with no exception of its own. Requires Shizuku to already be
   authorized; skips cleanly with a one-line note if it isn't.
+
+## v0.24: reverse-read the real factory AndroidAuto.apk/.odex/.vdex (read-only, static analysis)
+
+The user pulled the actual `AndroidAuto.apk`, `.odex` and `.vdex` off the car's system partition -
+this is `com.gwm.app.aap`, GWM's own Android Auto host app, not a third-party or placeholder. All
+analysis below is static and read-only: the APK was unzipped, the manifest's binary XML and the
+vdex's embedded Compact Dex (`cdex001`) string tables were parsed directly (no decompiler was
+available in the sandbox this was done in - no network access to install one), nothing was
+patched, resigned, or written back anywhere.
+
+**A claim correction, for the project record.** A separate AI session (referred to as "Copilot" in
+the conversation) had produced a report naming specific classes/methods -
+`Lcom/gwm/app/aap/presenter/AndroidAutoPresenter;` and `notifyNativeMap` - as evidence inside this
+vdex. A complete, exhaustive scan of both dex blobs' string tables (227,257 entries, counts
+cross-checked against the file's own declared `string_ids_size` for each blob) found **no trace of
+either string anywhere in the file**. They do not exist in this binary. Two *other* claims from
+the same report - `NavigationStatusService` and `INSTRUMENT_CLUSTER_START` - checked out exactly.
+Treat anything else from that source with the same scrutiny; it is not reliably grounded in the
+actual files.
+
+**Confirmed, verified findings:**
+
+- `com.gwm.app.aap` declares `sharedUserId` paired with the value `android.uid.system` in its
+  manifest. This app runs *as* the system UID, platform-signed - not just "an app with more
+  permissions declared." This is the structural reason it can reach the privileged
+  cluster-renderer/`InstrumentCluster` path that `NavigationRendererProbe` has already confirmed
+  denied (`SecurityException`) to a normal app: a different trust tier, reachable only by
+  re-signing with GWM's platform key. That is squarely the kind of signature-protected boundary
+  this project has stayed clear of throughout, and nothing here changes that.
+- 67 `.properties` vehicle-profile assets ship inside the APK. `CLUSTER_TYPE` splits exactly
+  34 `tbt_only` / 31 `map_tbt` / 2 `map_only`. **None of the 67 match this car** - no "H7", no
+  2026 model year; the newest entries are 2024 generic GWM codes and 2022 Haval H6/Dargo. Which
+  profile (if any of these) is actually active on this H7 Vanta is unknown - it may be a newer
+  profile not present in this particular pulled copy, or it may fall back to `default.properties`.
+- `CLUSTER_WIDTH`/`HEIGHT` (1920x720 in every profile sampled) is the full cluster canvas - it
+  matches the physical cluster display exactly and confirms `CLUSTER_INDEX=2` is the same
+  logical displayId 2 already mapped via `dumpsys display`. But `CLUSTER_DISPLAY_WIDTH`/`HEIGHT`
+  (600x350 in every profile sampled, including both `map_only` ones) is the actual rendered
+  inset size *within* that canvas. So `map_only` does not mean "a big map fills the cluster" -
+  it means "show the map instead of turn-by-turn graphics," still inside that same modest inset.
+- One independently-found, unresolved lead: `res/mipmap/mask_cluster_map.png` is **1920x620** -
+  far larger than the 600x350 inset in every sampled profile. Something in this app can
+  apparently render much larger than what's specified in the profiles checked so far. What
+  triggers that was not found (would need real bytecode tracing - see limitation below).
+- `res/layout/layout_cluster*.xml` confirm the cluster output is a `SurfaceView` (a video frame),
+  consistent with everything already established about this architecture.
+- Real (confirmed, not fabricated) protobuf navigation-protocol class/field names found in the
+  string tables: `gal.NavigationStatusService`, `InstrumentClusterType`, `InstrumentClusterInput`,
+  `InstrumentClusterAction`, `INSTRUMENT_CLUSTER_START`/`STOP`, plus maneuver/lane/distance/
+  destination message names - a genuine structured navigation data channel from the phone, inside
+  this privileged app's own process.
+- `com.projection.action.CLUSTER_STATE` is declared as a `<protected-broadcast>` in this app's
+  manifest. A `<protected-broadcast>` only restricts who may *send* that action system-wide -
+  receiving it is unrestricted, same as any other broadcast. This is the one avenue found today
+  that needs no special permission and no signature-level trust. **v0.24 adds
+  `ClusterStateBroadcastListener`**, folded into the existing "Probe NavigationRenderer..."
+  button/Stop pair: it registers for this action and logs anything received, including after the
+  probe's other synchronous checks finish (the broadcast, if sent system-wide at all, likely only
+  fires on a real mode change, not on a schedule). Whether `com.gwm.app.aap` actually sends it
+  system-wide, and what it carries if so, is unknown until tested on-car.
+
+**A tooling limitation worth recording plainly.** A hand-rolled parser was attempted to map each
+class to its declared methods (`type_ids`/`method_ids`/`class_defs`/`class_data_item`), one level
+past the plain string-table scan. It produced results that *looked* plausible but were
+demonstrably wrong on inspection: it attributed `DISPLAY_TYPE_CLUSTER` to a class as if it were a
+method, when it is actually a protobuf enum constant embedded in a descriptor string nearby in the
+same table. That parser's output was discarded entirely rather than reported - every finding above
+came only from the plain string-table scan (reliable: each entry is read independently via its own
+`string_ids` array slot, no structural assumptions beyond that one lookup) or from direct manifest/
+resource inspection. **Real method-body tracing - where AA video is decoded, how a `SurfaceView`
+gets selected - was not achieved and is not achievable with what's available in this sandbox**: no
+network access to install a real dex/smali toolchain (`androguard`/`jadx`/`baksmali` all failed on
+DNS resolution). That would need to happen in an environment with that access, or be handed to a
+real disassembler elsewhere.
+
+**Bottom line.** This was a worthwhile correction and a real documentation gain, but it does not
+open a new path for ClusterProbe to render the live AA video feed. The `android.uid.system`
+finding, on top of the already-confirmed on-car `SecurityException`, closes that specific door
+twice over - a full trace of `com.gwm.app.aap`'s video-decode/`SurfaceView` logic would explain
+*how* the privileged app does it, not hand ClusterProbe a way to do it too, since the gate is
+identity/signing, not a discoverable technique. The one live, testable, unprivileged thread left
+is the `CLUSTER_STATE` broadcast listener added this version - not video, but possibly real
+cluster/navigation state data, which would still be useful for ClusterProbe's own rendered
+dash even if the literal video frame stays out of reach.

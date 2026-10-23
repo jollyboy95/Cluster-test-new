@@ -125,10 +125,22 @@ public class MainActivity extends android.app.Activity {
             appendLog("Running NavigationRendererProbe (CarNavigationStatusManager.getInstrumentClusterInfo() "
                     + "+ a bindService() permission check against GWM's own renderer service)...");
             NavigationRendererProbe.run(getApplicationContext(), msg -> appendLog(msg));
+            // v0.24: also start listening for com.projection.action.CLUSTER_STATE - a
+            // <protected-broadcast> found declared in the real factory com.gwm.app.aap
+            // AndroidAutoApp (AndroidAuto.apk/.odex/.vdex pulled off this car and reverse-read,
+            // read-only, same methodology as every other static-analysis step in this project -
+            // see docs/H7_DISPLAY_ARCHITECTURE.md). Unlike everything else probed so far,
+            // RECEIVING a protected-broadcast needs no special permission - only SENDING one
+            // does. Folded into this same button/Stop pair rather than a new one, per "limit
+            // reinstalls". Keeps listening in the background after the rest of this probe's
+            // synchronous checks finish, since the broadcast (if it's sent system-wide at all)
+            // likely only fires on an actual mode change, not on a fixed schedule.
+            ClusterStateBroadcastListener.start(getApplicationContext(), msg -> appendLog(msg));
         });
         addButton(root, "Stop cluster-renderer probe", () -> {
             NavigationRendererProbe.stop();
-            appendLog("Cluster-renderer probe stopped, any bind torn down.");
+            ClusterStateBroadcastListener.stop();
+            appendLog("Cluster-renderer probe stopped, any bind torn down, cluster-state broadcast listener unregistered.");
         });
 
         addSection(root, "Experimental: capture display content");
@@ -369,6 +381,7 @@ public class MainActivity extends android.app.Activity {
         CaptureHelper.stop();
         OverlayManager.hideAll();
         NavigationRendererProbe.stop();
+        ClusterStateBroadcastListener.stop();
         try {
             Shizuku.removeRequestPermissionResultListener(shizukuPermListener);
         } catch (Throwable ignored) {
