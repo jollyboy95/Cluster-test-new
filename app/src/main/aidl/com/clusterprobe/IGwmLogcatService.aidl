@@ -12,4 +12,8 @@ interface IGwmLogcatService {
     void start(in IGwmLogcatCallback callback);
     void stop();
     void destroy();
+    /** One-shot, non-streaming: dumps the recent log buffer once (logcat -d) and reports
+     *  onStopped() when the dump process exits on its own - unlike start(), this doesn't tail
+     *  forever and doesn't touch the start()/stop() streaming state. */
+    void dumpOnce(in IGwmLogcatCallback callback);
 }

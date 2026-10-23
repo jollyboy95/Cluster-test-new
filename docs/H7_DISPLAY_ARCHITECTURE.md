@@ -68,3 +68,38 @@ service, a distinct and less-privileged path from binding GWM's rendering servic
 check (`probeClusterManagerDetail`) now obtains that manager (while genuinely connected) and logs
 the full signatures of those three methods, so if it's reachable here, the exact calling
 convention is already in hand for a next step.
+
+## v0.22 on-car result: Car-connect itself times out, plus a bug the result exposed
+
+Running v0.22 on-car (three times) gave a consistent, real result: both `createCar(...)`
+overloads timed out after 4s waiting for `onServiceConnected()` - `car.connect()` returned
+without throwing, but no callback ever arrived and `isConnected()` read false at the end. Unlike
+the GWM renderer bind (a normal `bindService()` call, which throws `SecurityException`
+immediately when denied), `android.car.Car`'s connection to `car_service` doesn't appear to fail
+the same way on this build - a permission/SELinux-level rejection here may simply never reach the
+app as an exception at all. On its own this is already a meaningful negative result: a normal app
+cannot get a working `android.car.Car` connection on this build, via any available overload -
+which closes off the *entire* standard-AAOS-manager avenue, not just the specific permissions
+already checked.
+
+That result also exposed a real bug in the probe itself: the 4-8 second blocking wait was running
+on whatever thread called `NavigationRendererProbe.run(...)`, which in `MainActivity` is the
+probe button's `onClick` - the **main thread**. That's within Android's ANR window (5s for input
+dispatch). Fixed in v0.23 by running the whole probe on its own background thread.
+
+## v0.23: background thread + a logcat snapshot to explain the Car-connect timeout
+
+Two changes:
+
+- The probe now runs entirely on a background thread (`NavigationRendererProbe.run(...)` spawns
+  it), not the button's `onClick` thread - the UI log panel updates the same way as before
+  (`StatusListener` still posts to the main thread), this just stops the up-to-~14s worst case
+  wait (8s Car-connect + 6s logcat dump) from blocking input.
+- A new one-shot, read-only logcat snapshot (`CarServiceLogSnapshot`, reusing the existing
+  Shizuku shell-UID `GwmLogcatUserService` mechanism via a new `dumpOnce(...)` AIDL method,
+  completely separate from the live-vehicle-data stream) runs after the Car-connect step either
+  way. It dumps the recent system log once (`logcat -d -b all -t 3000`) and reports only lines
+  containing car-service/permission-denial keywords (`car_service`, `ICar`, `denied`,
+  `SecurityException`, `avc:`, `Permission Denial`, etc.) - the only way left to find out *why*
+  the connection times out with no exception of its own. Requires Shizuku to already be
+  authorized; skips cleanly with a one-line note if it isn't.

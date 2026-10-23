@@ -67,12 +67,22 @@ public class NavigationRendererProbe {
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private Context appContext;
-    private ServiceConnection bindConnection;
+    private volatile ServiceConnection bindConnection;
 
     public static void run(Context context, StatusListener status) {
         stop();
         instance = new NavigationRendererProbe();
-        instance.doRun(context.getApplicationContext(), status);
+        Context appCtx = context.getApplicationContext();
+        // v0.23: this probe now does a real, blocking wait for a car_service connection (up to
+        // ~8s across two createCar(...) overloads) plus an optional ~6s logcat dump - both of
+        // which used to run directly on whatever thread called run(), which in MainActivity is
+        // the button's onClick on the MAIN thread. That's squarely in ANR territory (Android's
+        // input-dispatch ANR threshold is 5s). Running the whole probe on its own background
+        // thread fixes that; every status line still reaches the UI safely via log()'s
+        // main.post(...), same as before.
+        Thread t = new Thread(() -> instance.doRun(appCtx, status), "navigation-renderer-probe");
+        t.setDaemon(true);
+        t.start();
     }
 
     public static void stop() {
@@ -120,7 +130,43 @@ public class NavigationRendererProbe {
             disconnectQuietly(car);
         }
 
+        // v0.23: if Car-connect above timed out, that's a real result (no normal app can connect
+        // to car_service on this build) but it came with no exception at all to explain WHY -
+        // android.car.Car's connection doesn't fail the same way a denied bindService() does.
+        // Grab a one-shot logcat snapshot (via Shizuku, same mechanism as the live vehicle-data
+        // feed) filtered for car-service/permission-denial keywords - this is run regardless of
+        // whether Car-connect succeeded, since it's cheap and the denial reason (if any) may have
+        // been logged by the system at bind time either way.
+        logCarServiceLogSnapshot(status);
+
         probeBindToFactoryRenderer(context, status);
+    }
+
+    private void logCarServiceLogSnapshot(StatusListener status) {
+        log(status, "Car-service logcat snapshot: capturing recent system log for car-service/"
+                + "permission-denial keywords (via Shizuku, read-only)...");
+        CarServiceLogSnapshot.Result snap;
+        try {
+            snap = CarServiceLogSnapshot.capture();
+        } catch (Throwable t) {
+            log(status, "Car-service logcat snapshot failed: " + shortCause(t));
+            return;
+        }
+        if (snap.note != null) {
+            log(status, "Car-service logcat snapshot: " + snap.note);
+        }
+        if (snap.totalLinesScanned > 0) {
+            log(status, "Car-service logcat snapshot: scanned " + snap.totalLinesScanned
+                    + " recent lines, " + snap.matchingLines.size() + " matched car-service/denial keywords.");
+            if (snap.matchingLines.isEmpty()) {
+                log(status, "Car-service logcat snapshot: no matching lines - either nothing "
+                        + "relevant was logged, or it had already scrolled out of the buffer.");
+            } else {
+                for (String line : snap.matchingLines) {
+                    log(status, "Car-service logcat snapshot: " + line);
+                }
+            }
+        }
     }
 
     /**

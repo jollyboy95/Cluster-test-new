@@ -94,6 +94,49 @@ public class GwmLogcatUserService extends IGwmLogcatService.Stub {
         }
     }
 
+    /**
+     * One-shot dump of the recent log buffer (logcat -d, not a live tail) across all buffers,
+     * independent of the streaming start()/stop() state above (uses its own local Process
+     * variable, not the shared logcatProcess field) so it can run even while a live stream is
+     * also active without interfering with it. "-t 3000" caps it to the last 3000 lines so a
+     * busy system doesn't produce an unbounded dump.
+     */
+    @Override
+    public void dumpOnce(IGwmLogcatCallback callback) {
+        Thread t = new Thread(() -> runDumpOnce(callback), "gwm-logcat-dump");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private void runDumpOnce(IGwmLogcatCallback callback) {
+        Process dumpProcess = null;
+        try {
+            ProcessBuilder pb = new ProcessBuilder("logcat", "-d", "-v", "raw", "-b", "all", "-t", "3000");
+            pb.redirectErrorStream(true);
+            dumpProcess = pb.start();
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(dumpProcess.getInputStream()))) {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    try {
+                        callback.onLine(line);
+                    } catch (RemoteException dead) {
+                        break;
+                    }
+                }
+            }
+            safeStopReason(callback, "dump complete");
+        } catch (IOException e) {
+            safeStopReason(callback, "logcat -d failed: " + e);
+        } finally {
+            if (dumpProcess != null) {
+                try {
+                    dumpProcess.destroy();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
     @Override
     public synchronized void stop() {
         stopping = true;
