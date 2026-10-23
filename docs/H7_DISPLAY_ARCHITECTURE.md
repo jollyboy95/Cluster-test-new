@@ -1349,3 +1349,46 @@ say "AA session overlay added on the cluster display" with no Shizuku involved, 
 why it fell back. Next logical step once this is confirmed working: use it as the real foundation
 for the "new Newcastle cluster" the user wants to build - a real Android Auto map feed, live on
 the physical cluster, with the custom dial/overlay layer built around it on the same display.
+
+## v0.41: real on-car test, real bug found and fixed, real milestone confirmed
+
+First genuine on-car run of the v0.40 cluster-display path, with the actual head unit log and a
+photo of the physical cluster screen. Results:
+
+- Manual-IP wireless connect worked end to end: TCP connected to the phone
+  (`192.168.43.198:5277`), handed off to the real session pipeline.
+- The overlay route (`OverlayManager.showAaSession()`) threw a real bug on first contact:
+  `java.lang.RuntimeException: Can't create Handler inside thread
+  Thread[aa-wireless-manual-connect,5,main] that has not called Looper.prepare()`.
+  `AaWirelessManualConnect.doConnect()` runs on its own plain background `Thread` (not the main
+  thread), and `WindowManager.addView()` (inside `showAaSession()`) requires a thread with a
+  prepared Looper to attach the window's input/draw callbacks to - normally the main thread.
+  Every earlier use of `OverlayManager.show()` (the dial overlay) was always triggered from a
+  button tap, which is already on the main thread, so this exact gap never surfaced before.
+  **Fixed** by posting the `OverlayManager.showAaSession(...)` call through
+  `new Handler(Looper.getMainLooper()).post(...)` in `AaWirelessManualConnect`, the same pattern
+  every other UI-facing call in that class already uses via its own `log()`/`setStage()` helpers -
+  this was the one call that had been missed.
+- **The automatic fallback worked exactly as designed**: when the overlay route failed, it fell
+  back to `ThirdPartyAaLauncher.launchOwnAaSessionOnDisplay()`, and the log shows
+  `"Launched directly on display 2 via ActivityOptions.setLaunchDisplayId - no Shizuku needed for
+  this one."` - the v0.39 direct (non-Shizuku) `ActivityOptions.setLaunchDisplayId()` attempt
+  actually succeeded this time, with no SecurityException and no Shizuku fallback-of-the-fallback
+  needed.
+- **Confirmed by photo**: the physical cluster display (display 2) was showing
+  `AndroidAutoSessionActivity`'s own status text, "Video decoder started (800x480) - waiting for
+  real frames...". This is the furthest this project has gotten - this project's OWN
+  from-scratch Android Auto session screen, genuinely mounted and running on the physical
+  instrument cluster, TCP-connected to a real phone, MediaCodec decoder configured and running.
+  No video frames had arrived yet at the moment of the photo - normal at this stage (the full AA
+  handshake - version exchange, TLS, ServiceDiscoveryResponse, channel open, AV channel setup,
+  video focus - can take a few seconds, and nothing yet confirms it stalled versus just not having
+  been given enough time).
+
+With the overlay bug fixed, the next on-car attempt should show whether `launchOnClusterDisplay`
+now succeeds via the overlay route directly (no fallback needed at all), or still falls back to
+the now-also-confirmed-working direct `ActivityOptions` route - either is a real win at this point.
+The open question going into the next test is purely protocol-level: does video actually start
+flowing after "waiting for real frames", or does the session stall before the first frame -
+worth watching the log for stage updates and the phone for any lingering Android Auto connection
+prompt that might need accepting.

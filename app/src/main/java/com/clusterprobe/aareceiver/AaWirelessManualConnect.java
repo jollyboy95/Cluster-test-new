@@ -121,7 +121,16 @@ public final class AaWirelessManualConnect {
                 log(status, "launchOnClusterDisplay is ON - hosting the session in an overlay "
                         + "window on the cluster display (TYPE_APPLICATION_OVERLAY, no Shizuku "
                         + "needed - same mechanism the dial overlay already uses there).");
-                com.clusterprobe.OverlayManager.showAaSession(context,
+                // WindowManager.addView() (inside OverlayManager.showAaSession()) requires a
+                // thread with a prepared Looper - this method runs on the plain background
+                // "aa-wireless-manual-connect" Thread, which never calls Looper.prepare(), so the
+                // call must be posted to the main thread first (same reason every other UI-facing
+                // call in this class already goes through a Handler(getMainLooper()).post(...),
+                // via log()/setStage() above - this is the one call that was missed, caught by a
+                // real on-car run: "Can't create Handler inside thread ... that has not called
+                // Looper.prepare()").
+                new android.os.Handler(android.os.Looper.getMainLooper()).post(() ->
+                    com.clusterprobe.OverlayManager.showAaSession(context,
                         com.clusterprobe.ThirdPartyAaLauncher.CLUSTER_DISPLAY_ID, handoffSocket,
                         new com.clusterprobe.OverlayManager.Result() {
                             @Override public void ok() {
@@ -135,7 +144,7 @@ public final class AaWirelessManualConnect {
                                         context, com.clusterprobe.ThirdPartyAaLauncher.CLUSTER_DISPLAY_ID,
                                         msg -> log(status, msg));
                             }
-                        });
+                        }));
             } else {
                 AndroidAutoSessionActivity.pendingSocket = handoffSocket;
                 android.content.Intent intent = new android.content.Intent(context, AndroidAutoSessionActivity.class);
